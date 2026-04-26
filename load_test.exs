@@ -1,10 +1,10 @@
 defmodule LoadTest do
   def run(qps, duration, jitter \\ 0.0) do
-    IO.puts "\n--- Starting Honest Load Test: #{qps} QPS for #{duration}s (Jitter: #{jitter}) ---"
+    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Jitter: #{jitter}) ---"
     total = qps * duration
     interval = div(1_000_000, qps)
     parent = self()
-    
+
     # Monitor for peak processes
     monitor_pid = spawn(fn -> monitor_loop(0) end)
 
@@ -17,7 +17,7 @@ defmodule LoadTest do
         target = scheduled_time + jitter_val
         now = System.monotonic_time(:microsecond)
         if target > now, do: Process.sleep(div(target - now, 1000))
-        
+
         spawn(fn ->
           # Sample status
           send(monitor_pid, {:check, PrologBridge.status()})
@@ -28,7 +28,7 @@ defmodule LoadTest do
       end)
     end)
 
-    collect(total, [], monitor_pid)
+    collect(total, [], 0, monitor_pid)
   end
 
   defp monitor_loop(peak) do
@@ -38,10 +38,14 @@ defmodule LoadTest do
     end
   end
 
-  defp collect(total, results, monitor_pid) do
-    if length(results) < total do
+  defp collect(total, results, count, monitor_pid) do
+    if rem(count, max(1, div(total, 10))) == 0 do
+      IO.write("\rProgress: #{count}/#{total}")
+    end
+
+    if count < total do
       receive do
-        {:res, r, l} -> collect(total, [{r, l} | results], monitor_pid)
+        {:res, r, l} -> collect(total, [{r, l} | results], count + 1, monitor_pid)
       after 60_000 -> finish(results, total, monitor_pid)
       end
     else
@@ -61,7 +65,7 @@ defmodule LoadTest do
     if actual > 0 do
       avg = Enum.sum(lats) / actual / 1000
       p95 = Enum.at(Enum.sort(lats), round(actual * 0.95) - 1) / 1000
-      IO.puts "\nSuccess: #{actual}/#{total}"
+      IO.puts "\n\nSuccess: #{actual}/#{total}"
       IO.puts "Peak Processes: #{peak}"
       IO.puts "Avg: #{Float.round(avg, 2)}ms"
       IO.puts "P95: #{Float.round(p95, 2)}ms"
