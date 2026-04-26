@@ -4,15 +4,22 @@ defmodule PrologBridge do
   """
 
   def query(query_str, timeout \\ 30_000) do
-    # callback: fn worker_state, resource -> {return, new_worker_state} end
-    NimblePool.checkout!(PrologBridge.Pool, :query, fn _worker_state, worker_pid ->
-      # Use the worker_pid (the resource) to call the GenServer
-      result = PrologBridge.Worker.query(worker_pid, query_str, timeout)
-      {result, :ready}
+    NimblePool.checkout!(PrologBridge.Pool, :query, fn _worker_state, _slot ->
+      # 1. Get a real worker from the WorkerPool. 
+      # This blocks if no worker is ready and triggers scaling.
+      worker_pid = PrologBridge.WorkerPool.checkout_worker(timeout)
+
+      try do
+        # 2. Perform the query
+        PrologBridge.Worker.query(worker_pid, query_str, timeout)
+      after
+        # 3. Always return the worker to the pool
+        PrologBridge.WorkerPool.checkin_worker(worker_pid)
+      end
     end, timeout)
   end
 
   def status do
-    %{total_processes: "Managed by NimblePool"}
+    PrologBridge.WorkerPool.status()
   end
 end

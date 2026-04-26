@@ -4,12 +4,14 @@ defmodule PrologBridge.Application do
 
   @impl true
   def start(_type, _args) do
-    pool_size = 16
-    baseline = 2
+    pool_size = Application.get_env(:prolog_bridge, :pool_max_workers, 16)
+    baseline = Application.get_env(:prolog_bridge, :pool_baseline_workers, 2)
 
     children = [
+      {PrologBridge.WorkerSupervisor, []},
+      {PrologBridge.WorkerPool, [max_workers: pool_size]},
       {NimblePool,
-       worker: {PrologBridge.Pool, [pool_size: pool_size]},
+       worker: {PrologBridge.Pool, []},
        pool_size: pool_size,
        name: PrologBridge.Pool}
     ]
@@ -18,14 +20,13 @@ defmodule PrologBridge.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        # Synchronously warmup the baseline
+        # Synchronously warmup the baseline workers
+        # We start them via WorkerSupervisor and check them into WorkerPool
         1..baseline
-        |> Enum.map(fn _ ->
-          Task.async(fn ->
-            PrologBridge.query("is_valid(1)")
-          end)
+        |> Enum.each(fn _ ->
+          {:ok, worker_pid} = PrologBridge.WorkerSupervisor.start_worker()
+          PrologBridge.WorkerPool.checkin_worker(worker_pid)
         end)
-        |> Task.await_many(60_000)
 
         {:ok, pid}
 
