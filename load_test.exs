@@ -1,0 +1,70 @@
+defmodule LoadTest do
+  def run(qps, duration, jitter \\ 0.0) do
+    IO.puts "\n--- Starting Honest Load Test: #{qps} QPS for #{duration}s (Jitter: #{jitter}) ---"
+    total = qps * duration
+    interval = div(1_000_000, qps)
+    parent = self()
+    
+    # Monitor for peak processes
+    monitor_pid = spawn(fn -> monitor_loop(0) end)
+
+    spawn_link(fn ->
+      start = System.monotonic_time(:microsecond)
+      Enum.each(1..total, fn i ->
+        scheduled_time = start + (i * interval)
+        max_jitter = round(interval * jitter)
+        jitter_val = if max_jitter > 0, do: Enum.random(-max_jitter..max_jitter), else: 0
+        target = scheduled_time + jitter_val
+        now = System.monotonic_time(:microsecond)
+        if target > now, do: Process.sleep(div(target - now, 1000))
+        
+        spawn(fn ->
+          # Sample status
+          send(monitor_pid, {:check, PrologBridge.status()})
+          s = System.monotonic_time(:microsecond)
+          res = PrologBridge.query("fact(#{Enum.random(1..5_000_000)}, X)")
+          send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
+        end)
+      end)
+    end)
+
+    collect(total, [], monitor_pid)
+  end
+
+  defp monitor_loop(peak) do
+    receive do
+      {:check, %{total_processes: t}} -> monitor_loop(max(peak, t))
+      {:get, caller} -> send(caller, {:peak, peak})
+    end
+  end
+
+  defp collect(total, results, monitor_pid) do
+    if length(results) < total do
+      receive do
+        {:res, r, l} -> collect(total, [{r, l} | results], monitor_pid)
+      after 60_000 -> finish(results, total, monitor_pid)
+      end
+    else
+      finish(results, total, monitor_pid)
+    end
+  end
+
+  defp finish(results, total, monitor_pid) do
+    send(monitor_pid, {:get, self()})
+    peak = receive do {:peak, p} -> p end
+    process(results, total, peak)
+  end
+
+  defp process(results, total, peak) do
+    actual = length(results)
+    lats = Enum.map(results, fn {_, l} -> l end)
+    if actual > 0 do
+      avg = Enum.sum(lats) / actual / 1000
+      p95 = Enum.at(Enum.sort(lats), round(actual * 0.95) - 1) / 1000
+      IO.puts "\nSuccess: #{actual}/#{total}"
+      IO.puts "Peak Processes: #{peak}"
+      IO.puts "Avg: #{Float.round(avg, 2)}ms"
+      IO.puts "P95: #{Float.round(p95, 2)}ms"
+    end
+  end
+end
