@@ -1,11 +1,17 @@
 defmodule PrologBridge.Worker do
   use GenServer
+  require Logger
 
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
 
+  def query(pid, query_str, timeout) do
+    GenServer.call(pid, {:query, query_str}, timeout)
+  end
+
   @impl true
-  def init(_args) do
-    {:ok, %{port: nil, caller: nil, buffer: ""}, {:continue, :handshake}}
+  def init(args) do
+    # caller: nil must be present to avoid KeyError in handle_call
+    {:ok, %{args: args, port: nil, buffer: "", caller: nil}, {:continue, :handshake}}
   end
 
   @impl true
@@ -13,17 +19,18 @@ defmodule PrologBridge.Worker do
     executable = "swipl"
     server_path = Application.app_dir(:prolog_bridge, "priv/prolog/server.pl")
     args = ["-q", "-s", server_path, "-g", "main"]
-    kb_file = Application.get_env(:prolog_bridge, :kb_file, "kb.pl")
-    abs_kb_path = Path.expand(kb_file)
+    kb_file = state.args[:kb_file]
 
     port = Port.open({:spawn_executable, System.find_executable(executable)}, [
       :binary, :exit_status, args: args,
-      env: [{~c"KB_FILE", String.to_charlist(abs_kb_path)}]
+      env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
     ])
 
     receive do
       {^port, {:data, _data}} ->
         {:noreply, %{state | port: port}}
+    after
+      60_000 -> {:stop, :timeout, state}
     end
   end
 

@@ -23,7 +23,7 @@ defmodule PrologBridge.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:poolboy, "~> 1.5"}
+      {:nimble_pool, "~> 1.0"}
     ]
   end
 end
