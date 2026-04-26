@@ -33,7 +33,7 @@ defmodule LoadTest do
 
   defp monitor_loop(peak) do
     receive do
-      {:check, %{total_processes: t}} -> monitor_loop(max(peak, t))
+      {:check, %{total_workers: t}} -> monitor_loop(max(peak, t))
       {:get, caller} -> send(caller, {:peak, peak})
     end
   end
