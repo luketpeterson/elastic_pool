@@ -20,13 +20,15 @@ defmodule PrologBridge.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        # Synchronously warmup the baseline workers
-        # We start them via WorkerSupervisor and check them into WorkerPool
+        # Synchronously warmup the baseline workers in PARALLEL
+        # Because Worker.init/1 now handles the handshake, start_worker()
+        # only returns once the process is fully ready.
         1..baseline
-        |> Enum.each(fn _ ->
+        |> Task.async_stream(fn _ ->
           {:ok, worker_pid} = PrologBridge.WorkerSupervisor.start_worker()
-          PrologBridge.WorkerPool.checkin_worker(worker_pid)
-        end)
+          PrologBridge.WorkerPool.checkin_worker_sync(worker_pid)
+        end, max_concurrency: baseline, timeout: 60_000)
+        |> Stream.run()
 
         {:ok, pid}
 

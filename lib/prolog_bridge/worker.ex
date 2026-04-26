@@ -10,27 +10,23 @@ defmodule PrologBridge.Worker do
 
   @impl true
   def init(args) do
-    # caller: nil must be present to avoid KeyError in handle_call
-    {:ok, %{args: args, port: nil, buffer: "", caller: nil}, {:continue, :handshake}}
-  end
-
-  @impl true
-  def handle_continue(:handshake, state) do
     executable = "swipl"
     server_path = Application.app_dir(:prolog_bridge, "priv/prolog/server.pl")
-    args = ["-q", "-s", server_path, "-g", "main"]
-    kb_file = state.args[:kb_file]
+    args_list = ["-q", "-s", server_path, "-g", "main"]
+    kb_file = args[:kb_file]
 
     port = Port.open({:spawn_executable, System.find_executable(executable)}, [
-      :binary, :exit_status, args: args,
+      :binary, :exit_status, args: args_list,
       env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
     ])
 
+    # Synchronously wait for the handshake signal from the Prolog process.
+    # If the process fails to start, the port will send an :exit_status message.
     receive do
       {^port, {:data, _data}} ->
-        {:noreply, %{state | port: port}}
-    after
-      60_000 -> {:stop, :timeout, state}
+        {:ok, %{args: args, port: port, buffer: "", caller: nil}}
+      {^port, {:exit_status, status}} ->
+        {:stop, {:prolog_start_failed, status}}
     end
   end
 

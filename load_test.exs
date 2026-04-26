@@ -5,9 +5,6 @@ defmodule LoadTest do
     interval = div(1_000_000, qps)
     parent = self()
 
-    # Monitor for peak processes
-    monitor_pid = spawn(fn -> monitor_loop(0) end)
-
     spawn_link(fn ->
       start = System.monotonic_time(:microsecond)
       Enum.each(1..total, fn i ->
@@ -19,8 +16,6 @@ defmodule LoadTest do
         if target > now, do: Process.sleep(div(target - now, 1000))
 
         spawn(fn ->
-          # Sample status
-          send(monitor_pid, {:check, PrologBridge.status()})
           s = System.monotonic_time(:microsecond)
           res = PrologBridge.query("fact(#{Enum.random(1..5_000_000)}, X)")
           send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
@@ -28,35 +23,27 @@ defmodule LoadTest do
       end)
     end)
 
-    collect(total, [], 0, monitor_pid)
+    collect(total, [], 0)
   end
 
-  defp monitor_loop(peak) do
-    receive do
-      {:check, %{total_workers: t}} -> monitor_loop(max(peak, t))
-      {:get, caller} -> send(caller, {:peak, peak})
-    end
-  end
-
-  defp collect(total, results, count, monitor_pid) do
+  defp collect(total, results, count) do
     if rem(count, max(1, div(total, 10))) == 0 do
       IO.write("\rProgress: #{count}/#{total}")
     end
 
     if count < total do
       receive do
-        {:res, r, l} -> collect(total, [{r, l} | results], count + 1, monitor_pid)
-      after 60_000 -> finish(results, total, monitor_pid)
+        {:res, r, l} -> collect(total, [{r, l} | results], count + 1)
+      after 60_000 -> finish(results, total)
       end
     else
-      finish(results, total, monitor_pid)
+      finish(results, total)
     end
   end
 
-  defp finish(results, total, monitor_pid) do
-    send(monitor_pid, {:get, self()})
-    peak = receive do {:peak, p} -> p end
-    process(results, total, peak)
+  defp finish(results, total) do
+    status = PrologBridge.status()
+    process(results, total, status.peak_workers)
   end
 
   defp process(results, total, peak) do
