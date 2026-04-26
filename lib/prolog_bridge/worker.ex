@@ -11,12 +11,14 @@ defmodule PrologBridge.Worker do
   @impl true
   def handle_continue(:handshake, state) do
     executable = "swipl"
-    args = ["-q", "-s", "server.pl", "-g", "main"]
+    server_path = Application.app_dir(:prolog_bridge, "priv/prolog/server.pl")
+    args = ["-q", "-s", server_path, "-g", "main"]
     kb_file = Application.get_env(:prolog_bridge, :kb_file, "kb.pl")
+    abs_kb_path = Path.expand(kb_file)
 
     port = Port.open({:spawn_executable, System.find_executable(executable)}, [
       :binary, :exit_status, args: args,
-      env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
+      env: [{~c"KB_FILE", String.to_charlist(abs_kb_path)}]
     ])
 
     receive do
