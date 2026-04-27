@@ -32,7 +32,7 @@ defmodule PrologBridge.ScalingManager do
   def init(config) do
     {:ok, %{
       starting: false,
-      last_scale_time: 0,
+      last_scale_time: System.monotonic_time(:millisecond) - config.cooldown_ms,
       cooldown_ms: config.cooldown_ms,
       max_workers: config.max_workers
     }}
