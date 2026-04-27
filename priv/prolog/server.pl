@@ -9,16 +9,21 @@
 
 % Main loop
 main :-
-    % Send ready signal to Elixir
-    json_write_dict(current_output, _{status: ready}, [width(0)]),
-    nl,
-    flush_output,
-    loop.
+    catch(
+        (   % Send ready signal to Elixir
+            json_write_dict(current_output, _{status: ready}, [width(0)]),
+            nl,
+            flush_output,
+            loop
+        ),
+        _Error,
+        halt(0)
+    ).
 
 loop :-
     read_line_to_string(user_input, Line),
     (   Line == end_of_file
-    ->  halt
+    ->  halt(0)
     ;   (   Line \== ""
         ->  handle_line(Line)
         ;   true
@@ -31,7 +36,7 @@ handle_line(Line) :-
     catch(
         (   atom_json_dict(Line, Request, []),
             (   get_dict(command, Request, "halt")
-            ->  halt
+            ->  halt(0)
             ;   QueryStr = Request.get(query),
                 read_term_from_atom(QueryStr, Query, [variable_names(Bindings)]),
                 findall(Bindings, Query, Solutions),
@@ -40,7 +45,10 @@ handle_line(Line) :-
             )
         ),
         Error,
-        reply(error, Error)
+        (   (Error = error(io_error(write, _), _) ; Error = error(resource_error(write), _))
+        ->  halt(0)
+        ;   reply(error, Error)
+        )
     ).
 
 % Convert Bindings list (Name=Value) to a dict
@@ -53,9 +61,14 @@ binding_to_pair(Name=Value, Name-Value).
 % Format and send the reply
 reply(Status, Data) :-
     format_to_json(Status, Data, Dict),
-    json_write_dict(current_output, Dict, [width(0)]),
-    nl,
-    flush_output.
+    catch(
+        (   json_write_dict(current_output, Dict, [width(0)]),
+            nl,
+            flush_output
+        ),
+        _Error,
+        halt(0)
+    ).
 
 format_to_json(success, Solutions, _{status: success, results: Solutions}).
 format_to_json(error, Error, _{status: error, message: Message}) :-

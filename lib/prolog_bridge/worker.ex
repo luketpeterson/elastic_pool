@@ -10,7 +10,6 @@ defmodule PrologBridge.Worker do
 
   @impl true
   def init(args) do
-    # Trap exit to ensure terminate/2 is called
     Process.flag(:trap_exit, true)
 
     executable = "swipl"
@@ -23,7 +22,6 @@ defmodule PrologBridge.Worker do
       env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
     ])
 
-    # Synchronously wait for the handshake signal from the Prolog process.
     receive do
       {^port, {:data, _data}} ->
         PrologBridge.WorkerPool.worker_ready(self())
@@ -58,25 +56,25 @@ defmodule PrologBridge.Worker do
   @impl true
   def terminate(_reason, state) do
     if state.port do
-      # 1. Try to send a clean halt command
       try do
         Port.command(state.port, Jason.encode!(%{command: "halt"}) <> "\n")
       rescue
         _ -> :ok
       end
 
-      # 2. Wait for the OS process to actually exit
-      receive do
-        {_port, {:exit_status, _status}} ->
-          :ok
-      after
-        5_000 ->
-          # Force close if it takes too long
-          Logger.warning("[Worker] Prolog process failed to exit gracefully within 5s. Force closing port.")
-          Port.close(state.port)
-          :ok
-      end
+      # Drain the port to prevent Broken Pipe on the Prolog side
+      drain_port(state.port)
+      Port.close(state.port)
     end
     :ok
+  end
+
+  defp drain_port(port) do
+    receive do
+      {^port, {:data, _}} -> drain_port(port)
+      {^port, {:exit_status, _}} -> :ok
+    after
+      100 -> :ok
+    end
   end
 end
