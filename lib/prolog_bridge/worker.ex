@@ -24,7 +24,8 @@ defmodule PrologBridge.Worker do
 
     receive do
       {^port, {:data, _data}} ->
-        PrologBridge.WorkerPool.worker_ready(self())
+        PrologBridge.ScalingManager.worker_ready()
+        PrologBridge.Pool.worker_ready(self())
         {:ok, %{args: args, port: port, buffer: "", caller: nil}}
       {^port, {:exit_status, status}} ->
         {:stop, {:prolog_start_failed, status}}

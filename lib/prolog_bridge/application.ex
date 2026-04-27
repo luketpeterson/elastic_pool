@@ -4,12 +4,12 @@ defmodule PrologBridge.Application do
 
   @impl true
   def start(_type, _args) do
-    pool_size = Application.get_env(:prolog_bridge, :pool_max_workers, 16)
     baseline = Application.get_env(:prolog_bridge, :pool_baseline_workers, 2)
 
     children = [
       {PrologBridge.WorkerSupervisor, []},
-      {PrologBridge.WorkerPool, [max_workers: pool_size]}
+      {PrologBridge.ScalingManager, []},
+      {PrologBridge.Pool, []}
     ]
 
     opts = [strategy: :one_for_one, name: PrologBridge.Supervisor]
@@ -33,7 +33,7 @@ defmodule PrologBridge.Application do
 
   defp wait_for_workers(target) do
     status = PrologBridge.status()
-    if status.total_workers < target do
+    if status.total_ready_workers < target do
       Process.sleep(10)
       wait_for_workers(target)
     else

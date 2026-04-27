@@ -4,15 +4,24 @@ defmodule PrologBridge do
   """
 
   def query(query_str, timeout \\ 30_000) do
-    worker_pid = PrologBridge.WorkerPool.checkout_worker(timeout)
-    try do
-      PrologBridge.Worker.query(worker_pid, query_str, timeout)
-    after
-      PrologBridge.WorkerPool.checkin_worker(worker_pid)
+    case PrologBridge.Pool.checkout(timeout) do
+      {:ok, _pool_ref, worker_pid} ->
+        try do
+          PrologBridge.Worker.query(worker_pid, query_str, timeout)
+        after
+          PrologBridge.Pool.checkin(worker_pid)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   def status do
-    PrologBridge.WorkerPool.status()
+    pool_status = PrologBridge.Pool.status()
+    %{
+      total_ready_workers: pool_status.size,
+      peak_workers: pool_status.peak_workers
+    }
   end
 end
