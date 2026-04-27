@@ -6,7 +6,7 @@ defmodule PrologBridge.Application do
   def start(_type, _args) do
     # Centralized configuration
     config = %{
-      max_workers: Application.get_env(:prolog_bridge, :pool_max_workers, 16),
+      max_workers: Application.get_env(:prolog_bridge, :pool_max_workers, 8),
       baseline_workers: Application.get_env(:prolog_bridge, :pool_baseline_workers, 2),
       cooldown_ms: Application.get_env(:prolog_bridge, :pool_cooldown_ms, 500),
       scale_threshold: Application.get_env(:prolog_bridge, :pool_scale_threshold, 100)
