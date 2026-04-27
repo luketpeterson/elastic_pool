@@ -52,7 +52,11 @@ defmodule PrologBridge.Pool do
 
   @impl true
   def handle_call(:status, _from, state) do
-    {:reply, %{size: map_size(state.monitors), peak_workers: state.peak_workers}, state}
+    {:reply, %{
+      size: map_size(state.monitors), 
+      peak_workers: state.peak_workers,
+      waiting_count: :queue.len(state.waiting)
+    }, state}
   end
 
   @impl true

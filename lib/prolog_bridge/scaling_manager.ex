@@ -34,7 +34,8 @@ defmodule PrologBridge.ScalingManager do
       starting: false,
       last_scale_time: System.monotonic_time(:millisecond) - config.cooldown_ms,
       cooldown_ms: config.cooldown_ms,
-      max_workers: config.max_workers
+      max_workers: config.max_workers,
+      scale_threshold: config.scale_threshold
     }}
   end
 
@@ -51,14 +52,17 @@ defmodule PrologBridge.ScalingManager do
         {:noreply, state}
 
       true ->
-        total_ready = total_ready_count()
+        pool_status = PrologBridge.Pool.status()
+        total_ready = pool_status.size
+        waiting = pool_status.waiting_count
 
-        if total_ready < state.max_workers do
-          Logger.info("[ScalingManager] Scaling up. Total ready: #{total_ready}")
+        if total_ready < state.max_workers and waiting >= state.scale_threshold do
+          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting} (Threshold: #{state.scale_threshold})")
           Task.start(fn ->
             case PrologBridge.WorkerSupervisor.start_worker() do
               {:ok, _pid} -> :ok
-              {:error, _reason} -> 
+              {:error, reason} -> 
+                Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
                 GenServer.cast(__MODULE__, :worker_ready)
             end
           end)

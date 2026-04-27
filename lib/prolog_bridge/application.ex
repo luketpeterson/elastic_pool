@@ -8,8 +8,10 @@ defmodule PrologBridge.Application do
     config = %{
       max_workers: Application.get_env(:prolog_bridge, :pool_max_workers, 16),
       baseline_workers: Application.get_env(:prolog_bridge, :pool_baseline_workers, 2),
-      cooldown_ms: Application.get_env(:prolog_bridge, :pool_cooldown_ms, 500)
+      cooldown_ms: Application.get_env(:prolog_bridge, :pool_cooldown_ms, 500),
+      scale_threshold: Application.get_env(:prolog_bridge, :pool_scale_threshold, 100)
     }
+
 
     children = [
       {PrologBridge.WorkerSupervisor, []},
