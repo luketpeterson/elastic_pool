@@ -45,7 +45,6 @@ defmodule PrologBridge.Pool do
 
       [] ->
         # Trigger scaling and queue the caller
-        Logger.debug("[Pool] No workers available, triggering scale up")
         PrologBridge.ScalingManager.request_scale_up()
         {:noreply, %{state | waiting: :queue.in(from, state.waiting)}}
     end
