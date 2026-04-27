@@ -22,13 +22,25 @@ defmodule PrologBridge.Worker do
       env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
     ])
 
+    # Return immediately so the supervisor can start more workers in parallel
+    {:ok, %{args: args, port: port, buffer: "", caller: nil}, {:continue, :wait_for_prolog_ready}}
+  end
+
+  @impl true
+  def handle_continue(:wait_for_prolog_ready, state) do
+    port = state.port
+
     receive do
       {^port, {:data, _data}} ->
         PrologBridge.ScalingManager.worker_ready()
         PrologBridge.Pool.worker_ready(self())
-        {:ok, %{args: args, port: port, buffer: "", caller: nil}}
+        {:noreply, state}
+
       {^port, {:exit_status, status}} ->
-        {:stop, {:prolog_start_failed, status}}
+        {:stop, {:prolog_start_failed, status}, state}
+    after
+      30_000 ->
+        {:stop, :prolog_init_timeout, state}
     end
   end
 
