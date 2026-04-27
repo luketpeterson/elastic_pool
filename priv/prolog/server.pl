@@ -30,11 +30,14 @@ loop :-
 handle_line(Line) :-
     catch(
         (   atom_json_dict(Line, Request, []),
-            QueryStr = Request.get(query),
-            read_term_from_atom(QueryStr, Query, [variable_names(Bindings)]),
-            findall(Bindings, Query, Solutions),
-            maplist(bindings_to_dict, Solutions, SolutionDicts),
-            reply(success, SolutionDicts)
+            (   get_dict(command, Request, "halt")
+            ->  halt
+            ;   QueryStr = Request.get(query),
+                read_term_from_atom(QueryStr, Query, [variable_names(Bindings)]),
+                findall(Bindings, Query, Solutions),
+                maplist(bindings_to_dict, Solutions, SolutionDicts),
+                reply(success, SolutionDicts)
+            )
         ),
         Error,
         reply(error, Error)

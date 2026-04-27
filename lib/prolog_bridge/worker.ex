@@ -10,29 +10,26 @@ defmodule PrologBridge.Worker do
 
   @impl true
   def init(args) do
-    # init/1 is now fast, allowing parallel startup via Supervisor
-    {:ok, %{args: args, port: nil, buffer: "", caller: nil}, {:continue, :handshake}}
-  end
+    # Trap exit to ensure terminate/2 is called
+    Process.flag(:trap_exit, true)
 
-  @impl true
-  def handle_continue(:handshake, state) do
     executable = "swipl"
     server_path = Application.app_dir(:prolog_bridge, "priv/prolog/server.pl")
     args_list = ["-q", "-s", server_path, "-g", "main"]
-    kb_file = state.args[:kb_file]
+    kb_file = args[:kb_file]
 
     port = Port.open({:spawn_executable, System.find_executable(executable)}, [
       :binary, :exit_status, args: args_list,
       env: [{~c"KB_FILE", String.to_charlist(kb_file)}]
     ])
 
+    # Synchronously wait for the handshake signal from the Prolog process.
     receive do
       {^port, {:data, _data}} ->
-        # Notify the pool that this worker is now hot and ready
         PrologBridge.WorkerPool.worker_ready(self())
-        {:noreply, %{state | port: port}}
+        {:ok, %{args: args, port: port, buffer: "", caller: nil}}
       {^port, {:exit_status, status}} ->
-        {:stop, {:prolog_start_failed, status}, state}
+        {:stop, {:prolog_start_failed, status}}
     end
   end
 
@@ -57,4 +54,29 @@ defmodule PrologBridge.Worker do
 
   @impl true
   def handle_info({_port, {:exit_status, _}}, state), do: {:stop, :prolog_exit, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    if state.port do
+      # 1. Try to send a clean halt command
+      try do
+        Port.command(state.port, Jason.encode!(%{command: "halt"}) <> "\n")
+      rescue
+        _ -> :ok
+      end
+
+      # 2. Wait for the OS process to actually exit
+      receive do
+        {_port, {:exit_status, _status}} ->
+          :ok
+      after
+        5_000 ->
+          # Force close if it takes too long
+          Logger.warning("[Worker] Prolog process failed to exit gracefully within 5s. Force closing port.")
+          Port.close(state.port)
+          :ok
+      end
+    end
+    :ok
+  end
 end
