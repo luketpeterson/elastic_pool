@@ -4,11 +4,16 @@ defmodule PrologBridge.Application do
 
   @impl true
   def start(_type, _args) do
-    baseline = Application.get_env(:prolog_bridge, :pool_baseline_workers, 2)
+    # Centralized configuration
+    config = %{
+      max_workers: Application.get_env(:prolog_bridge, :pool_max_workers, 16),
+      baseline_workers: Application.get_env(:prolog_bridge, :pool_baseline_workers, 2),
+      cooldown_ms: Application.get_env(:prolog_bridge, :pool_cooldown_ms, 500)
+    }
 
     children = [
       {PrologBridge.WorkerSupervisor, []},
-      {PrologBridge.ScalingManager, []},
+      {PrologBridge.ScalingManager, config},
       {PrologBridge.Pool, []}
     ]
 
@@ -16,14 +21,13 @@ defmodule PrologBridge.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
-        # Start baseline workers as fast as possible.
-        1..baseline
+        # Start baseline workers
+        1..config.baseline_workers
         |> Enum.each(fn _ ->
           {:ok, _worker_pid} = PrologBridge.WorkerSupervisor.start_worker()
         end)
 
-        # Wait until the baseline workers are fully initialized and registered in the pool
-        wait_for_workers(baseline)
+        wait_for_workers(config.baseline_workers)
 
         {:ok, pid}
 

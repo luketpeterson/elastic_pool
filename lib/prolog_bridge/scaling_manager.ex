@@ -6,8 +6,8 @@ defmodule PrologBridge.ScalingManager do
   use GenServer
   require Logger
 
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(config) do
+    GenServer.start_link(__MODULE__, config, name: __MODULE__)
   end
 
   def request_scale_up do
@@ -22,7 +22,6 @@ defmodule PrologBridge.ScalingManager do
   Returns the total number of ready workers in the Pool.
   """
   def total_ready_count do
-    # Pool.status returns %{size: size}
     %{size: size} = PrologBridge.Pool.status()
     size
   end
@@ -30,11 +29,12 @@ defmodule PrologBridge.ScalingManager do
   # --- Callbacks ---
 
   @impl true
-  def init(_opts) do
+  def init(config) do
     {:ok, %{
       starting: false,
       last_scale_time: 0,
-      cooldown_ms: 500
+      cooldown_ms: config.cooldown_ms,
+      max_workers: config.max_workers
     }}
   end
 
@@ -45,30 +45,25 @@ defmodule PrologBridge.ScalingManager do
 
     cond do
       state.starting ->
-        Logger.debug("[ScalingManager] Already starting a worker, skipping")
         {:noreply, state}
 
       not cooldown_passed ->
-        Logger.debug("[ScalingManager] Cooldown not passed, skipping")
         {:noreply, state}
 
       true ->
         total_ready = total_ready_count()
-        max_workers = Application.get_env(:prolog_bridge, :pool_max_workers, 16)
 
-        if total_ready < max_workers do
+        if total_ready < state.max_workers do
           Logger.info("[ScalingManager] Scaling up. Total ready: #{total_ready}")
           Task.start(fn ->
             case PrologBridge.WorkerSupervisor.start_worker() do
               {:ok, _pid} -> :ok
-              {:error, reason} -> 
-                Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
+              {:error, _reason} -> 
                 GenServer.cast(__MODULE__, :worker_ready)
             end
           end)
           {:noreply, %{state | starting: true, last_scale_time: now}}
         else
-          Logger.debug("[ScalingManager] Max workers reached (#{max_workers}), skipping")
           {:noreply, state}
         end
     end
