@@ -4,6 +4,13 @@ defmodule PrologBridge.Application do
 
   @impl true
   def start(_type, _args) do
+    # Create ETS table for lock-free status reads
+    # :public allows anyone to read; :set means one value per key
+    :ets.new(:prolog_pool_stats, [:public, :set, :named_table, read_concurrency: true])
+    # Initialize with default values
+    :ets.insert(:prolog_pool_stats, {:total_ready, 0})
+    :ets.insert(:prolog_pool_stats, {:waiting_clients, 0})
+
     # Centralized configuration
     config = %{
       max_workers: Application.get_env(:prolog_bridge, :pool_max_workers, 8),
@@ -16,7 +23,7 @@ defmodule PrologBridge.Application do
     children = [
       {PrologBridge.WorkerSupervisor, []},
       {PrologBridge.ScalingManager, config},
-      {PrologBridge.Pool, []}
+      {PrologBridge.Pool, [scale_threshold: config.scale_threshold]}
     ]
 
     opts = [strategy: :one_for_one, name: PrologBridge.Supervisor]
@@ -39,7 +46,7 @@ defmodule PrologBridge.Application do
 
   defp wait_for_workers(target) do
     status = PrologBridge.status()
-    if status.total_ready_workers < target do
+    if status.total_workers < target do
       Process.sleep(10)
       wait_for_workers(target)
     else

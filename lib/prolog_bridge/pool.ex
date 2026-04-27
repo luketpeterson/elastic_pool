@@ -26,36 +26,49 @@ defmodule PrologBridge.Pool do
   end
 
   # --- Callbacks ---
+@impl true
+def init(opts) do
+  {:ok, %{
+    available: [],
+    waiting: :queue.new(),
+    monitors: %{}, # pid -> ref
+    peak_workers: 0,
+    log_counter: 0,
+    scale_threshold: opts[:scale_threshold] || 100
+  }}
+end
 
-  @impl true
-  def init(_opts) do
-    {:ok, %{
-      available: [],
-      waiting: :queue.new(),
-      monitors: %{}, # pid -> ref
-      peak_workers: 0
-    }}
-  end
+@impl true
+def handle_call(:checkout, from, state) do
+  case state.available do
 
-  @impl true
-  def handle_call(:checkout, from, state) do
-    case state.available do
-      [pid | rest] ->
-        {:reply, {:ok, nil, pid}, %{state | available: rest}}
+    [pid | rest] ->
+      new_state = %{state | available: rest}
+      update_ets(new_state)
+      {:reply, {:ok, nil, pid}, new_state}
 
-      [] ->
-        # Trigger scaling and queue the caller
+    [] ->
+      # Trigger scaling if the queue (including this requester) hits the threshold
+      new_waiting = :queue.in(from, state.waiting)
+      waiting_count = :queue.len(new_waiting)
+      new_state = %{state | waiting: new_waiting}
+      update_ets(new_state)
+
+      if waiting_count >= state.scale_threshold do
         PrologBridge.ScalingManager.request_scale_up()
-        {:noreply, %{state | waiting: :queue.in(from, state.waiting)}}
-    end
+      end
+
+      {:noreply, new_state}
   end
+end
 
   @impl true
   def handle_call(:status, _from, state) do
     {:reply, %{
-      size: map_size(state.monitors), 
+      total_workers: map_size(state.monitors), 
+      available_workers: length(state.available),
       peak_workers: state.peak_workers,
-      waiting_count: :queue.len(state.waiting)
+      waiting_clients: :queue.len(state.waiting)
     }, state}
   end
 
@@ -69,26 +82,40 @@ defmodule PrologBridge.Pool do
       case :queue.out(state.waiting) do
         {{:value, from}, rest} ->
           GenServer.reply(from, {:ok, nil, pid})
-          {:noreply, %{state | waiting: rest}}
+          new_state = %{state | waiting: rest}
+          update_ets(new_state)
+          {:noreply, new_state}
 
         {:empty, _} ->
           if pid in state.available do
             {:noreply, state}
           else
-            {:noreply, %{state | available: [pid | state.available]}}
+            new_state = %{state | available: [pid | state.available]}
+            update_ets(new_state)
+            {:noreply, new_state}
           end
       end
     else
-      {:noreply, handle_down(state, pid)}
+      new_state = handle_down(state, pid)
+      update_ets(new_state)
+      {:noreply, new_state}
     end
   end
 
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    {:noreply, handle_down(state, pid)}
+    new_state = handle_down(state, pid)
+    update_ets(new_state)
+    {:noreply, new_state}
   end
 
   # --- Private ---
+
+  defp update_ets(state) do
+    :ets.insert(:prolog_pool_stats, {:total_ready, map_size(state.monitors)})
+    :ets.insert(:prolog_pool_stats, {:waiting_clients, :queue.len(state.waiting)})
+    state
+  end
 
   defp ensure_monitored(state, pid) do
     if Map.has_key?(state.monitors, pid) do

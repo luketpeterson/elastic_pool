@@ -19,6 +19,7 @@ defmodule LoadTest do
           s = System.monotonic_time(:microsecond)
           res = PrologBridge.query("fact(#{Enum.random(1..5_000_000)}, X)")
           send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
+          # IO.inspect(res)
         end)
       end)
     end)
@@ -43,17 +44,20 @@ defmodule LoadTest do
 
   defp finish(results, total) do
     status = PrologBridge.status()
-    process(results, total, status.peak_workers)
+    process(results, total, status)
   end
 
-  defp process(results, total, peak) do
+  defp process(results, total, status) do
     actual = length(results)
     lats = Enum.map(results, fn {_, l} -> l end)
     if actual > 0 do
       avg = Enum.sum(lats) / actual / 1000
       p95 = Enum.at(Enum.sort(lats), round(actual * 0.95) - 1) / 1000
       IO.puts "\n\nSuccess: #{actual}/#{total}"
-      IO.puts "Peak Processes: #{peak}"
+      IO.puts "Total Workers: #{status.total_workers}"
+      IO.puts "Peak Workers: #{status.peak_workers}"
+      IO.puts "Available Workers: #{status.available_workers}"
+      IO.puts "Waiting Clients: #{status.waiting_clients}"
       IO.puts "Avg: #{Float.round(avg, 2)}ms"
       IO.puts "P95: #{Float.round(p95, 2)}ms"
     end

@@ -18,14 +18,6 @@ defmodule PrologBridge.ScalingManager do
     GenServer.cast(__MODULE__, :worker_ready)
   end
 
-  @doc """
-  Returns the total number of ready workers in the Pool.
-  """
-  def total_ready_count do
-    %{size: size} = PrologBridge.Pool.status()
-    size
-  end
-
   # --- Callbacks ---
 
   @impl true
@@ -52,9 +44,9 @@ defmodule PrologBridge.ScalingManager do
         {:noreply, state}
 
       true ->
-        pool_status = PrologBridge.Pool.status()
-        total_ready = pool_status.size
-        waiting = pool_status.waiting_count
+        # Read from ETS - fast and non-blocking
+        [{:total_ready, total_ready}] = :ets.lookup(:prolog_pool_stats, :total_ready)
+        [{:waiting_clients, waiting}] = :ets.lookup(:prolog_pool_stats, :waiting_clients)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
           Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting} (Threshold: #{state.scale_threshold})")

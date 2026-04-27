@@ -18,10 +18,6 @@ defmodule PrologBridge do
   end
 
   def status do
-    pool_status = PrologBridge.Pool.status()
-    %{
-      total_ready_workers: pool_status.size,
-      peak_workers: pool_status.peak_workers
-    }
+    PrologBridge.Pool.status()
   end
 end
