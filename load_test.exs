@@ -5,27 +5,24 @@
 
 defmodule LoadTest.DummyWorker do
   @moduledoc """
-  A simple worker implementation.
-
-  To use ElasticPool, you must provide a module that implements:
-    * `handle_work(request, from, state)` - The core work logic.
-
-  Optionally, you can implement lifecycle hooks:
-    * `init(args)` - Called synchronously on worker startup.  Worker won't join the pool
-      until this function returns.
-    * `terminate(reason, state)` - Called on shutdown.
+  A simple worker implementation using the ElasticPool.Worker behavior.
   """
+  use ElasticPool.Worker
+
+  @impl true
   def init(args) do
     # IO.puts("  [Worker] Spinning up...")
     Process.sleep(500)
     args
   end
 
+  @impl true
   def handle_work({:work, duration_ms}, _from, state) do
     Process.sleep(duration_ms)
     {:reply, {:ok, duration_ms}, state}
   end
 
+  @impl true
   def terminate(_reason, _state) do
     # IO.puts("  [Worker] Shutting down...")
     :ok
@@ -34,7 +31,23 @@ end
 
 defmodule LoadTest do
   @moduledoc """
-  Top-level test runner. Demonstrates pool instantiation and calling.
+  A stochastic load generator for ElasticPool.
+
+  The generator uses a Gamma distribution to determine inter-arrival times,
+  allowing for realistic traffic patterns ranging from bursty to regular.
+
+  ## Running the test
+  From the project root:
+      mix run -r load_test.exs -e "LoadTest.run(qps, duration, work_ms, shape)"
+
+  ## Arguments
+    * `qps` - Average Queries Per Second.
+    * `duration` - Total test duration in seconds.
+    * `work_duration_ms` - (default 100) The time each worker simulates work.
+    * `shape` - (default 1.0) The regularity of traffic.
+      * `1.0`: Natural (Exponential) arrivals. Bursty with gaps.
+      * `> 1.0`: More regular/steady traffic.
+      * `< 1.0`: Highly bursty/clustered traffic.
   """
 
   def run(qps, duration, work_duration_ms \\ 100, shape \\ 1.0) do
@@ -50,8 +63,7 @@ defmodule LoadTest do
       scale_threshold: 10
     )
 
-    # 2. Perform work using ElasticPool.call/2 or call/3
-    # This example uses the load-testing harness below to perform many calls.
+    # 2. Perform work using ElasticPool.call/2
     LoadTest.Harness.start(LTPool, qps, duration, work_duration_ms, shape)
   end
 end

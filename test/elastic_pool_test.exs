@@ -1,18 +1,25 @@
 defmodule ElasticPoolTest.TestWorker do
+  use ElasticPool.Worker
+  @impl true
   def handle_work(:ping, _from, state), do: {:reply, :pong, state}
 end
 
 defmodule ElasticPoolTest.SlowInitWorker do
+  use ElasticPool.Worker
+  @impl true
   def init(args) do
     Process.sleep(250)
     args
   end
+  @impl true
   def handle_work(_, _, state), do: {:reply, :ok, state}
 end
 
 defmodule ElasticPoolTest.TerminationWorker do
-  def init(args), do: args
+  use ElasticPool.Worker
+  @impl true
   def handle_work(_, _, state), do: {:reply, :ok, state}
+  @impl true
   def terminate(_reason, state) do
     send(state[:test_pid], :worker_terminated)
     :ok
@@ -47,7 +54,6 @@ defmodule ElasticPoolTest do
     name = :slow_startup_test
     start_time = System.monotonic_time(:millisecond)
 
-    # This should now block until 10 workers are ready
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.SlowInitWorker,
@@ -58,7 +64,6 @@ defmodule ElasticPoolTest do
     status = ElasticPool.status(name)
     duration = end_time - start_time
 
-    # Cleanup
     Supervisor.stop(name)
 
     assert status.peak_workers == 10
