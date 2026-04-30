@@ -58,7 +58,7 @@ defmodule LoadTest.Harness do
       dispatch_loop(pool_name, total, System.monotonic_time(:microsecond), shape, scale, parent, work_ms)
     end)
 
-    collect(pool_name, total, [], 0)
+    collect_results(pool_name, total, [], 0)
   end
 
   defp dispatch_loop(_pool, 0, _last, _sh, _sc, _p, _w), do: :ok
@@ -78,14 +78,14 @@ defmodule LoadTest.Harness do
     dispatch_loop(pool, remaining - 1, target, shape, scale, parent, work_ms)
   end
 
-  defp collect(pool, total, results, count) do
+  defp collect_results(pool, total, results, count) do
     if rem(count, max(1, div(total, 10))) == 0 do
       IO.write("\rProgress: #{count}/#{total}")
     end
 
     if count < total do
       receive do
-        {:res, r, l} -> collect(pool, total, [{r, l} | results], count + 1)
+        {:res, r, l} -> collect_results(pool, total, [{r, l} | results], count + 1)
       after 60_000 ->
         IO.puts("\nTimed out waiting for results.")
         finish(pool, results, total)
