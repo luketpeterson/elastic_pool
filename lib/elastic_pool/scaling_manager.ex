@@ -52,7 +52,7 @@ defmodule ElasticPool.ScalingManager do
         [{:waiting_clients, waiting}] = :ets.lookup(state.stats_table, :waiting_clients)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
-          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
+          # Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
 
           manager_pid = self()
           Task.start(fn ->
