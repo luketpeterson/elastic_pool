@@ -34,4 +34,13 @@ defmodule ElasticPool.Worker do
         {:noreply, %{state | handler_state: new_handler_state}}
     end
   end
+
+  @impl true
+  def terminate(reason, state) do
+    if function_exported?(state.handler, :terminate, 2) do
+      state.handler.terminate(reason, state.handler_state)
+    else
+      :ok
+    end
+  end
 end

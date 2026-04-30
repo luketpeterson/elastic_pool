@@ -5,12 +5,30 @@
 
 defmodule LoadTest.DummyWorker do
   @moduledoc """
-  A simple worker implementation. To use ElasticPool, you must provide a module
-  that implements `handle_work/3`.
+  A simple worker implementation.
+
+  To use ElasticPool, you must provide a module that implements:
+    * `handle_work(request, from, state)` - The core work logic.
+
+  Optionally, you can implement lifecycle hooks:
+    * `init(args)` - Called synchronously on worker startup.  Worker won't join the pool
+      until this function returns.
+    * `terminate(reason, state)` - Called on shutdown.
   """
+  def init(args) do
+    # IO.puts("  [Worker] Spinning up...")
+    Process.sleep(500)
+    args
+  end
+
   def handle_work({:work, duration_ms}, _from, state) do
     Process.sleep(duration_ms)
     {:reply, {:ok, duration_ms}, state}
+  end
+
+  def terminate(_reason, _state) do
+    # IO.puts("  [Worker] Shutting down...")
+    :ok
   end
 end
 
