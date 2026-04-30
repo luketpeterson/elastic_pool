@@ -6,12 +6,17 @@ defmodule ElasticPool do
 
   def start_link(opts) do
     name = opts[:name] || __MODULE__
+    baseline = opts[:baseline_workers] || 2
+    timeout = opts[:start_timeout] || 5000
+
     case Supervisor.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} ->
-        # Retrieve config to start baseline workers
-        # The init/1 function already started a Task, but it might have been too fast.
-        # Let's ensure it's done correctly here or via a coordinated start.
-        {:ok, pid}
+        case wait_until_ready(name, baseline, timeout) do
+          :ok -> {:ok, pid}
+          {:error, :timeout} -> 
+            Supervisor.stop(pid)
+            {:error, :timeout}
+        end
       error -> error
     end
   end
@@ -34,7 +39,7 @@ defmodule ElasticPool do
     name = opts[:name] || __MODULE__
     worker_handler = Keyword.fetch!(opts, :worker_handler)
     worker_args = opts[:worker_args] || []
-
+    
     pool_proc = Module.concat(name, Pool)
     manager_proc = Module.concat(name, ScalingManager)
     sup_proc = Module.concat(name, WorkerSupervisor)
@@ -66,16 +71,41 @@ defmodule ElasticPool do
       {ElasticPool.Pool, config}
     ]
 
-    # Use a post-start process to avoid race conditions during init
+    # Trigger parallel startup of baseline workers
     spawn(fn ->
       wait_for_alive(sup_proc)
       1..config.baseline_workers
       |> Enum.each(fn _ ->
-        ElasticPool.WorkerSupervisor.start_worker(sup_proc, config)
+        spawn(fn ->
+          ElasticPool.WorkerSupervisor.start_worker(sup_proc, config)
+        end)
       end)
     end)
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  def status(name \\ __MODULE__) do
+    ElasticPool.Pool.status(Module.concat(name, Pool))
+  end
+
+  defp wait_until_ready(name, baseline, timeout) do
+    start = System.monotonic_time(:millisecond)
+    do_wait_until_ready(name, baseline, timeout, start)
+  end
+
+  defp do_wait_until_ready(name, baseline, timeout, start) do
+    if status(name).total_workers >= baseline do
+      :ok
+    else
+      now = System.monotonic_time(:millisecond)
+      if (now - start) > timeout do
+        {:error, :timeout}
+      else
+        Process.sleep(10)
+        do_wait_until_ready(name, baseline, timeout, start)
+      end
+    end
   end
 
   defp wait_for_alive(name) do
@@ -85,9 +115,5 @@ defmodule ElasticPool do
       Process.sleep(10)
       wait_for_alive(name)
     end
-  end
-
-  def status(name \\ __MODULE__) do
-    ElasticPool.Pool.status(Module.concat(name, Pool))
   end
 end
