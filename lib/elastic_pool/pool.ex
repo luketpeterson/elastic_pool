@@ -64,7 +64,7 @@ defmodule ElasticPool.Pool do
   @impl true
   def handle_call(:status, _from, state) do
     {:reply, %{
-      total_workers: map_size(state.monitors), 
+      total_workers: map_size(state.monitors),
       available_workers: length(state.available),
       peak_workers: state.peak_workers,
       waiting_clients: :queue.len(state.waiting)
@@ -77,7 +77,7 @@ defmodule ElasticPool.Pool do
       state = ensure_monitored(state, pid)
       new_peak = max(state.peak_workers, map_size(state.monitors))
       state = %{state | peak_workers: new_peak}
-      
+
       case :queue.out(state.waiting) do
         {{:value, from}, rest} ->
           GenServer.reply(from, {:ok, nil, pid})

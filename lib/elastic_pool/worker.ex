@@ -8,21 +8,24 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def init(args) do
-    # handler: The module that implements handle_call/3
-    # pool: The pool pid/name to check back into
-    # manager: The scaling manager pid/name to notify
+    # Return immediately so the supervisor can start more workers in parallel
+    {:ok, args, {:continue, :post_init}}
+  end
+
+  @impl true
+  def handle_continue(:post_init, args) do
     handler = Keyword.fetch!(args, :handler)
     pool = Keyword.fetch!(args, :pool)
     manager = Keyword.fetch!(args, :manager)
 
-    # Optional init for the handler
+    # Optional slow init for the handler happens here
     handler_state = if function_exported?(handler, :init, 1), do: handler.init(args), else: args
 
     # Notify that this worker is ready to take work
     ElasticPool.ScalingManager.worker_ready(manager)
     ElasticPool.Pool.worker_ready(pool, self())
 
-    {:ok, %{handler: handler, handler_state: handler_state}}
+    {:noreply, %{handler: handler, handler_state: handler_state}}
   end
 
   @impl true
@@ -37,7 +40,8 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def terminate(reason, state) do
-    if function_exported?(state.handler, :terminate, 2) do
+    # Only delegate to handler if it was actually initialized
+    if is_map(state) and Map.has_key?(state, :handler) and function_exported?(state.handler, :terminate, 2) do
       state.handler.terminate(reason, state.handler_state)
     else
       :ok

@@ -13,7 +13,7 @@ end
 defmodule ElasticPoolTest do
   use ExUnit.Case
 
-  test "baseline startup is fast and correct" do
+  test "baseline workers init in parallel" do
     name = :slow_startup_test
     start_time = System.monotonic_time(:millisecond)
 
