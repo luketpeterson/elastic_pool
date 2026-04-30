@@ -1,6 +1,12 @@
+# ==============================================================================
+# SECTION 1: ElasticPool Usage Example
+# ==============================================================================
+# This section demonstrates the idiomatic way to integrate and use ElasticPool.
+
 defmodule LoadTest.DummyWorker do
   @moduledoc """
-  The worker implementation for the load test.
+  A simple worker implementation. To use ElasticPool, you must provide a module
+  that implements `handle_work/3`.
   """
   def handle_work({:work, duration_ms}, _from, state) do
     Process.sleep(duration_ms)
@@ -10,28 +16,12 @@ end
 
 defmodule LoadTest do
   @moduledoc """
-  A stochastic load generator for ElasticPool.
-
-  The generator uses a Gamma distribution to determine inter-arrival times,
-  allowing for realistic traffic patterns ranging from bursty to regular.
-
-  ## Running the test
-  From the project root:
-      mix run -r load_test.exs -e "LoadTest.run(qps, duration, work_ms, shape)"
-
-  ## Arguments
-    * `qps` - Average Queries Per Second.
-    * `duration` - Total test duration in seconds.
-    * `work_duration_ms` - (default 100) The time each worker simulates work.
-    * `shape` - (default 1.0) The regularity of traffic.
-      * `1.0`: Natural (Exponential) arrivals. Bursty with gaps.
-      * `> 1.0`: More regular/steady traffic.
-      * `< 1.0`: Highly bursty/clustered traffic.
+  Top-level test runner. Demonstrates pool instantiation and calling.
   """
 
   def run(qps, duration, work_duration_ms \\ 100, shape \\ 1.0) do
-    IO.puts "--- Initializing ElasticPool for Load Test ---"
-    # Ensure previous pool is cleaned up if running multiple times in same session
+    # 1. Start the pool as a supervised process.
+    # In a real app, this would likely be in your Application supervision tree.
     if Process.whereis(LTPool), do: Supervisor.stop(LTPool)
 
     {:ok, _pid} = ElasticPool.start_link(
@@ -42,24 +32,37 @@ defmodule LoadTest do
       scale_threshold: 10
     )
 
+    # 2. Perform work using ElasticPool.call/2 or call/3
+    # This example uses the load-testing harness below to perform many calls.
+    LoadTest.Harness.start(LTPool, qps, duration, work_duration_ms, shape)
+  end
+end
+
+# ==============================================================================
+# SECTION 2: Load Testing Harness
+# ==============================================================================
+# Internal machinery for simulating high concurrency and stochastic arrivals.
+
+defmodule LoadTest.Harness do
+  @moduledoc false
+
+  def start(pool_name, qps, duration, work_ms, shape) do
     total = qps * duration
     avg_interval_us = 1_000_000 / qps
-    # Mean of Gamma = shape * scale. We want Mean = avg_interval_us.
     scale = avg_interval_us / shape
 
-    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_duration_ms}ms, Shape: #{shape}) ---"
+    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_ms}ms, Shape: #{shape}) ---"
     parent = self()
 
     spawn_link(fn ->
-      dispatch_loop(total, System.monotonic_time(:microsecond), shape, scale, parent, work_duration_ms)
+      dispatch_loop(pool_name, total, System.monotonic_time(:microsecond), shape, scale, parent, work_ms)
     end)
 
-    collect(total, [], 0)
+    collect(pool_name, total, [], 0)
   end
 
-  defp dispatch_loop(0, _last_target, _shape, _scale, _parent, _work_ms), do: :ok
-  defp dispatch_loop(remaining, last_target, shape, scale, parent, work_ms) do
-    # Calculate time until the next arrival
+  defp dispatch_loop(_pool, 0, _last, _sh, _sc, _p, _w), do: :ok
+  defp dispatch_loop(pool, remaining, last_target, shape, scale, parent, work_ms) do
     delay = next_gamma(shape, scale)
     target = last_target + delay
 
@@ -68,14 +71,53 @@ defmodule LoadTest do
 
     spawn(fn ->
       s = System.monotonic_time(:microsecond)
-      res = ElasticPool.call(LTPool, {:work, work_ms})
+      res = ElasticPool.call(pool, {:work, work_ms})
       send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
     end)
 
-    dispatch_loop(remaining - 1, target, shape, scale, parent, work_ms)
+    dispatch_loop(pool, remaining - 1, target, shape, scale, parent, work_ms)
   end
 
-  # Gamma distribution generator (Marsaglia and Tsang method)
+  defp collect(pool, total, results, count) do
+    if rem(count, max(1, div(total, 10))) == 0 do
+      IO.write("\rProgress: #{count}/#{total}")
+    end
+
+    if count < total do
+      receive do
+        {:res, r, l} -> collect(pool, total, [{r, l} | results], count + 1)
+      after 60_000 ->
+        IO.puts("\nTimed out waiting for results.")
+        finish(pool, results, total)
+      end
+    else
+      finish(pool, results, total)
+    end
+  end
+
+  defp finish(pool, results, total) do
+    status = ElasticPool.status(pool)
+    process_results(results, total, status)
+  end
+
+  defp process_results(results, total, status) do
+    result_count = length(results)
+    # Adjust latency for expected sleep to see system overhead/queue time
+    latencies = Enum.map(results, fn {{:ok, s}, l} -> l / 1000 - s end)
+
+    if result_count > 0 do
+      avg = Enum.sum(latencies) / result_count
+      p95 = Enum.sort(latencies) |> Enum.at(max(0, round(result_count * 0.95) - 1))
+
+      IO.puts "\n\nSuccess: #{result_count}/#{total}"
+      IO.puts "Pool Status: #{inspect(status)}"
+      IO.puts "Avg Excess Latency: #{Float.round(avg, 2)}ms"
+      IO.puts "P95 Excess Latency: #{Float.round(p95, 2)}ms"
+    end
+  end
+
+  # --- Stochastic Generator (Gamma Distribution) ---
+
   defp next_gamma(a, b) when a < 1.0 do
     next_gamma(a + 1.0, b) * :math.pow(:rand.uniform(), 1.0 / a)
   end
@@ -98,46 +140,6 @@ defmodule LoadTest do
       else
         generate_gamma(d, c)
       end
-    end
-  end
-
-  defp collect(total, results, count) do
-    if rem(count, max(1, div(total, 10))) == 0 do
-      IO.write("\rProgress: #{count}/#{total}")
-    end
-
-    if count < total do
-      receive do
-        {:res, r, l} -> collect(total, [{r, l} | results], count + 1)
-      after 60_000 -> finish(results, total)
-      end
-    else
-      finish(results, total)
-    end
-  end
-
-  defp finish(results, total) do
-    status = ElasticPool.status(LTPool)
-    process(results, total, status)
-  end
-
-  defp process(results, total, status) do
-    result_count = length(results)
-
-    #Adjust latency for expected sleep.  We are only interested in the time lost
-    # in the dispatch machinery
-    latencies = Enum.map(results, fn {{:ok, s}, l} -> l / 1000 - s end)
-    if result_count > 0 do
-      avg = Enum.sum(latencies) / result_count
-      p95 = Enum.sort(latencies) |> Enum.at(max(0, round(result_count * 0.95) - 1))
-
-      IO.puts "\n\nSuccess: #{result_count}/#{total}"
-      IO.puts "Total Workers: #{status.total_workers}"
-      IO.puts "Peak Workers: #{status.peak_workers}"
-      IO.puts "Available Workers: #{status.available_workers}"
-      IO.puts "Waiting Clients: #{status.waiting_clients}"
-      IO.puts "Avg Latency: #{Float.round(avg, 2)}ms"
-      IO.puts "P95 Latency: #{Float.round(p95, 2)}ms"
     end
   end
 end
