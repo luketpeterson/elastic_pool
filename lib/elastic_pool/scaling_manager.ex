@@ -1,4 +1,4 @@
-defmodule PrologBridge.ScalingManager do
+defmodule ElasticPool.ScalingManager do
   @moduledoc """
   Global gatekeeper for scaling. Ensures only one worker is spinning up
   at a time and respects cooldowns.
@@ -45,13 +45,13 @@ defmodule PrologBridge.ScalingManager do
 
       true ->
         # Read from ETS - fast and non-blocking
-        [{:total_ready, total_ready}] = :ets.lookup(:prolog_pool_stats, :total_ready)
-        [{:waiting_clients, waiting}] = :ets.lookup(:prolog_pool_stats, :waiting_clients)
+        [{:total_ready, total_ready}] = :ets.lookup(:elastic_pool_stats, :total_ready)
+        [{:waiting_clients, waiting}] = :ets.lookup(:elastic_pool_stats, :waiting_clients)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
           Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting} (Threshold: #{state.scale_threshold})")
           Task.start(fn ->
-            case PrologBridge.WorkerSupervisor.start_worker() do
+            case ElasticPool.WorkerSupervisor.start_worker() do
               {:ok, _pid} -> :ok
               {:error, reason} -> 
                 Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")

@@ -1,7 +1,7 @@
 import Config
 
-config :prolog_bridge,
-  # Default to the quick-load file, then the standard pl file, then fallback to kb.pl
-  kb_file: System.get_env("KB_FILE") || 
-           (File.exists?("kb_large.qlf") && "kb_large.qlf") || 
-           "kb.pl"
+config :elastic_pool,
+  pool_max_workers: 8,
+  pool_baseline_workers: 2,
+  pool_cooldown_ms: 500,
+  pool_scale_threshold: 10

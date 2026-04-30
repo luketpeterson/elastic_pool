@@ -1,6 +1,6 @@
-defmodule PrologBridge.Pool do
+defmodule ElasticPool.Pool do
   @moduledoc """
-  A simple queue-based pool for Prolog workers.
+  A simple queue-based pool for Elastic workers.
   """
   use GenServer
   require Logger
@@ -26,41 +26,40 @@ defmodule PrologBridge.Pool do
   end
 
   # --- Callbacks ---
-@impl true
-def init(opts) do
-  {:ok, %{
-    available: [],
-    waiting: :queue.new(),
-    monitors: %{}, # pid -> ref
-    peak_workers: 0,
-    log_counter: 0,
-    scale_threshold: opts[:scale_threshold] || 100
-  }}
-end
-
-@impl true
-def handle_call(:checkout, from, state) do
-  case state.available do
-
-    [pid | rest] ->
-      new_state = %{state | available: rest}
-      update_ets(new_state)
-      {:reply, {:ok, nil, pid}, new_state}
-
-    [] ->
-      # Trigger scaling if the queue (including this requester) hits the threshold
-      new_waiting = :queue.in(from, state.waiting)
-      waiting_count = :queue.len(new_waiting)
-      new_state = %{state | waiting: new_waiting}
-      update_ets(new_state)
-
-      if waiting_count >= state.scale_threshold do
-        PrologBridge.ScalingManager.request_scale_up()
-      end
-
-      {:noreply, new_state}
+  @impl true
+  def init(opts) do
+    {:ok, %{
+      available: [],
+      waiting: :queue.new(),
+      monitors: %{}, # pid -> ref
+      peak_workers: 0,
+      log_counter: 0,
+      scale_threshold: opts[:scale_threshold] || 100
+    }}
   end
-end
+
+  @impl true
+  def handle_call(:checkout, from, state) do
+    case state.available do
+      [pid | rest] ->
+        new_state = %{state | available: rest}
+        update_ets(new_state)
+        {:reply, {:ok, nil, pid}, new_state}
+
+      [] ->
+        # Trigger scaling if the queue (including this requester) hits the threshold
+        new_waiting = :queue.in(from, state.waiting)
+        waiting_count = :queue.len(new_waiting)
+        new_state = %{state | waiting: new_waiting}
+        update_ets(new_state)
+
+        if waiting_count >= state.scale_threshold do
+          ElasticPool.ScalingManager.request_scale_up()
+        end
+
+        {:noreply, new_state}
+    end
+  end
 
   @impl true
   def handle_call(:status, _from, state) do
@@ -112,8 +111,8 @@ end
   # --- Private ---
 
   defp update_ets(state) do
-    :ets.insert(:prolog_pool_stats, {:total_ready, map_size(state.monitors)})
-    :ets.insert(:prolog_pool_stats, {:waiting_clients, :queue.len(state.waiting)})
+    :ets.insert(:elastic_pool_stats, {:total_ready, map_size(state.monitors)})
+    :ets.insert(:elastic_pool_stats, {:waiting_clients, :queue.len(state.waiting)})
     state
   end
 

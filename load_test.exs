@@ -1,6 +1,6 @@
 defmodule LoadTest do
-  def run(qps, duration, jitter \\ 0.0) do
-    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Jitter: #{jitter}) ---"
+  def run(qps, duration, work_duration_ms \\ 100, jitter \\ 0.0) do
+    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_duration_ms}ms, Jitter: #{jitter}) ---"
     total = qps * duration
     interval = div(1_000_000, qps)
     parent = self()
@@ -17,9 +17,8 @@ defmodule LoadTest do
 
         spawn(fn ->
           s = System.monotonic_time(:microsecond)
-          res = PrologBridge.query("fact(#{Enum.random(1..5_000_000)}, X)")
+          res = ElasticPool.work(work_duration_ms)
           send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
-          # IO.inspect(res)
         end)
       end)
     end)
@@ -43,7 +42,7 @@ defmodule LoadTest do
   end
 
   defp finish(results, total) do
-    status = PrologBridge.status()
+    status = ElasticPool.status()
     process(results, total, status)
   end
 
@@ -52,7 +51,7 @@ defmodule LoadTest do
     lats = Enum.map(results, fn {_, l} -> l end)
     if actual > 0 do
       avg = Enum.sum(lats) / actual / 1000
-      p95 = Enum.at(Enum.sort(lats), round(actual * 0.95) - 1) / 1000
+      p95 = Enum.sort(lats) |> Enum.at(max(0, round(actual * 0.95) - 1)) |> Kernel./(1000)
       IO.puts "\n\nSuccess: #{actual}/#{total}"
       IO.puts "Total Workers: #{status.total_workers}"
       IO.puts "Peak Workers: #{status.peak_workers}"
@@ -63,3 +62,5 @@ defmodule LoadTest do
     end
   end
 end
+
+# To run: mix run -e "LoadTest.run(10, 5, 200)"
