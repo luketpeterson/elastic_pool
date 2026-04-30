@@ -5,36 +5,37 @@ defmodule ElasticPool.Pool do
   use GenServer
   require Logger
 
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(config) do
+    GenServer.start_link(__MODULE__, config, name: config.pool)
   end
 
-  def checkout(timeout \\ :infinity) do
-    GenServer.call(__MODULE__, :checkout, timeout)
+  def checkout(pool, timeout \\ :infinity) do
+    GenServer.call(pool, :checkout, timeout)
   end
 
-  def checkin(worker_pid) do
-    GenServer.cast(__MODULE__, {:checkin, worker_pid})
+  def checkin(pool, worker_pid) do
+    GenServer.cast(pool, {:checkin, worker_pid})
   end
 
-  def worker_ready(worker_pid) do
-    GenServer.cast(__MODULE__, {:checkin, worker_pid})
+  def worker_ready(pool, worker_pid) do
+    GenServer.cast(pool, {:checkin, worker_pid})
   end
 
-  def status do
-    GenServer.call(__MODULE__, :status)
+  def status(pool) do
+    GenServer.call(pool, :status)
   end
 
   # --- Callbacks ---
   @impl true
-  def init(opts) do
+  def init(config) do
     {:ok, %{
       available: [],
       waiting: :queue.new(),
       monitors: %{}, # pid -> ref
       peak_workers: 0,
-      log_counter: 0,
-      scale_threshold: opts[:scale_threshold] || 100
+      scale_threshold: config.scale_threshold,
+      manager: config.manager,
+      stats_table: config.stats_table
     }}
   end
 
@@ -47,14 +48,13 @@ defmodule ElasticPool.Pool do
         {:reply, {:ok, nil, pid}, new_state}
 
       [] ->
-        # Trigger scaling if the queue (including this requester) hits the threshold
         new_waiting = :queue.in(from, state.waiting)
         waiting_count = :queue.len(new_waiting)
         new_state = %{state | waiting: new_waiting}
         update_ets(new_state)
 
         if waiting_count >= state.scale_threshold do
-          ElasticPool.ScalingManager.request_scale_up()
+          ElasticPool.ScalingManager.request_scale_up(state.manager)
         end
 
         {:noreply, new_state}
@@ -111,8 +111,8 @@ defmodule ElasticPool.Pool do
   # --- Private ---
 
   defp update_ets(state) do
-    :ets.insert(:elastic_pool_stats, {:total_ready, map_size(state.monitors)})
-    :ets.insert(:elastic_pool_stats, {:waiting_clients, :queue.len(state.waiting)})
+    :ets.insert(state.stats_table, {:total_ready, map_size(state.monitors)})
+    :ets.insert(state.stats_table, {:waiting_clients, :queue.len(state.waiting)})
     state
   end
 

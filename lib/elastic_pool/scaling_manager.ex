@@ -7,15 +7,15 @@ defmodule ElasticPool.ScalingManager do
   require Logger
 
   def start_link(config) do
-    GenServer.start_link(__MODULE__, config, name: __MODULE__)
+    GenServer.start_link(__MODULE__, config, name: config.manager)
   end
 
-  def request_scale_up do
-    GenServer.cast(__MODULE__, :request_scale_up)
+  def request_scale_up(manager) do
+    GenServer.cast(manager, :request_scale_up)
   end
 
-  def worker_ready do
-    GenServer.cast(__MODULE__, :worker_ready)
+  def worker_ready(manager) do
+    GenServer.cast(manager, :worker_ready)
   end
 
   # --- Callbacks ---
@@ -27,7 +27,10 @@ defmodule ElasticPool.ScalingManager do
       last_scale_time: System.monotonic_time(:millisecond) - config.cooldown_ms,
       cooldown_ms: config.cooldown_ms,
       max_workers: config.max_workers,
-      scale_threshold: config.scale_threshold
+      scale_threshold: config.scale_threshold,
+      stats_table: config.stats_table,
+      supervisor: config.supervisor,
+      config: config
     }}
   end
 
@@ -45,17 +48,19 @@ defmodule ElasticPool.ScalingManager do
 
       true ->
         # Read from ETS - fast and non-blocking
-        [{:total_ready, total_ready}] = :ets.lookup(:elastic_pool_stats, :total_ready)
-        [{:waiting_clients, waiting}] = :ets.lookup(:elastic_pool_stats, :waiting_clients)
+        [{:total_ready, total_ready}] = :ets.lookup(state.stats_table, :total_ready)
+        [{:waiting_clients, waiting}] = :ets.lookup(state.stats_table, :waiting_clients)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
-          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting} (Threshold: #{state.scale_threshold})")
+          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
+
+          manager_pid = self()
           Task.start(fn ->
-            case ElasticPool.WorkerSupervisor.start_worker() do
+            case ElasticPool.WorkerSupervisor.start_worker(state.supervisor, state.config) do
               {:ok, _pid} -> :ok
-              {:error, reason} -> 
+              {:error, reason} ->
                 Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
-                GenServer.cast(__MODULE__, :worker_ready)
+                GenServer.cast(manager_pid, :worker_ready)
             end
           end)
           {:noreply, %{state | starting: true, last_scale_time: now}}

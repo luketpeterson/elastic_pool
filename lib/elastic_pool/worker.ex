@@ -1,32 +1,37 @@
 defmodule ElasticPool.Worker do
+  @moduledoc """
+  A generic worker that delegates work to a caller-provided module.
+  """
   use GenServer
-  require Logger
 
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
 
-  def work(pid, duration_ms, timeout) do
-    GenServer.call(pid, {:work, duration_ms}, timeout)
+  @impl true
+  def init(args) do
+    # handler: The module that implements handle_call/3
+    # pool: The pool pid/name to check back into
+    # manager: The scaling manager pid/name to notify
+    handler = Keyword.fetch!(args, :handler)
+    pool = Keyword.fetch!(args, :pool)
+    manager = Keyword.fetch!(args, :manager)
+
+    # Optional init for the handler
+    handler_state = if function_exported?(handler, :init, 1), do: handler.init(args), else: args
+
+    # Notify that this worker is ready to take work
+    ElasticPool.ScalingManager.worker_ready(manager)
+    ElasticPool.Pool.worker_ready(pool, self())
+
+    {:ok, %{handler: handler, handler_state: handler_state}}
   end
 
   @impl true
-  def init(_args) do
-    # Signal that we are ready
-    # In a real scenario, this might wait for some initialization
-    # Here we just notify the managers
-    send(self(), :notify_ready)
-    {:ok, %{}}
-  end
-
-  @impl true
-  def handle_info(:notify_ready, state) do
-    ElasticPool.ScalingManager.worker_ready()
-    ElasticPool.Pool.worker_ready(self())
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_call({:work, duration_ms}, _from, state) do
-    Process.sleep(duration_ms)
-    {:reply, :ok, state}
+  def handle_call(request, from, state) do
+    case state.handler.handle_work(request, from, state.handler_state) do
+      {:reply, reply, new_handler_state} ->
+        {:reply, reply, %{state | handler_state: new_handler_state}}
+      {:noreply, new_handler_state} ->
+        {:noreply, %{state | handler_state: new_handler_state}}
+    end
   end
 end

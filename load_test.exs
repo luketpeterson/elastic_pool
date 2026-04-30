@@ -1,6 +1,26 @@
+defmodule LoadTest.DummyWorker do
+  @moduledoc """
+  The worker implementation for the load test.
+  """
+  def handle_work({:work, duration_ms}, _from, state) do
+    Process.sleep(duration_ms)
+    {:reply, {:ok, duration_ms}, state}
+  end
+end
+
 defmodule LoadTest do
   def run(qps, duration, work_duration_ms \\ 100, jitter \\ 0.0) do
-    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_duration_ms}ms, Jitter: #{jitter}) ---"
+    # 1. Instantiate the pool locally with our specific handler
+    IO.puts "--- Initializing ElasticPool for Load Test ---"
+    {:ok, _pid} = ElasticPool.start_link(
+      name: LTPool,
+      worker_handler: LoadTest.DummyWorker,
+      max_workers: 8,
+      baseline_workers: 2,
+      scale_threshold: 10
+    )
+
+    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_duration_ms}ms) ---"
     total = qps * duration
     interval = div(1_000_000, qps)
     parent = self()
@@ -17,7 +37,7 @@ defmodule LoadTest do
 
         spawn(fn ->
           s = System.monotonic_time(:microsecond)
-          res = ElasticPool.work(work_duration_ms)
+          res = ElasticPool.call(LTPool, {:work, work_duration_ms})
           send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
         end)
       end)
@@ -42,7 +62,7 @@ defmodule LoadTest do
   end
 
   defp finish(results, total) do
-    status = ElasticPool.status()
+    status = ElasticPool.status(LTPool)
     process(results, total, status)
   end
 
@@ -63,4 +83,4 @@ defmodule LoadTest do
   end
 end
 
-# To run: mix run -e "LoadTest.run(10, 5, 200)"
+# To run: mix run -r load_test.exs -e "LoadTest.run(200, 5, 100)"
