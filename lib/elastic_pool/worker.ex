@@ -8,6 +8,8 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def init(args) do
+    # Trap exits so terminate/2 is called even when the supervisor shuts us down
+    Process.flag(:trap_exit, true)
     # Return immediately so the supervisor can start more workers in parallel
     {:ok, args, {:continue, :post_init}}
   end

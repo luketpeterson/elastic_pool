@@ -10,8 +10,38 @@ defmodule ElasticPoolTest.SlowInitWorker do
   def handle_work(_, _, state), do: {:reply, :ok, state}
 end
 
+defmodule ElasticPoolTest.TerminationWorker do
+  def init(args), do: args
+  def handle_work(_, _, state), do: {:reply, :ok, state}
+  def terminate(_reason, state) do
+    send(state[:test_pid], :worker_terminated)
+    :ok
+  end
+end
+
 defmodule ElasticPoolTest do
   use ExUnit.Case
+
+  test "all workers are terminated when pool stops" do
+    name = :termination_test
+    test_pid = self()
+    worker_count = 5
+
+    {:ok, _pid} = ElasticPool.start_link(
+      name: name,
+      worker_handler: ElasticPoolTest.TerminationWorker,
+      baseline_workers: worker_count,
+      worker_args: [test_pid: test_pid]
+    )
+
+    # Shutdown the pool
+    Supervisor.stop(name)
+
+    # Check that we received exactly 5 termination messages
+    for _ <- 1..worker_count do
+      assert_receive :worker_terminated, 500
+    end
+  end
 
   test "baseline workers init in parallel" do
     name = :slow_startup_test
