@@ -18,6 +18,8 @@ defmodule ElasticPool.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:telemetry, "~> 1.0"}
+    ]
   end
 end

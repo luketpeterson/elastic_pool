@@ -13,7 +13,7 @@ defmodule ElasticPool do
       {:ok, pid} ->
         case wait_until_ready(name, baseline, timeout) do
           :ok -> {:ok, pid}
-          {:error, :timeout} -> 
+          {:error, :timeout} ->
             Supervisor.stop(pid)
             {:error, :timeout}
         end
@@ -39,7 +39,7 @@ defmodule ElasticPool do
     name = opts[:name] || __MODULE__
     worker_handler = Keyword.fetch!(opts, :worker_handler)
     worker_args = opts[:worker_args] || []
-    
+
     pool_proc = Module.concat(name, Pool)
     manager_proc = Module.concat(name, ScalingManager)
     sup_proc = Module.concat(name, WorkerSupervisor)
@@ -47,8 +47,12 @@ defmodule ElasticPool do
 
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
-      :ets.insert(stats_table, {:total_ready, 0})
-      :ets.insert(stats_table, {:waiting_clients, 0})
+      :ets.insert(stats_table, [
+        total_workers: 0,
+        available_workers: 0,
+        peak_workers: 0,
+        waiting_clients: 0
+      ])
     end
 
     config = %{
@@ -71,7 +75,6 @@ defmodule ElasticPool do
       {ElasticPool.Pool, config}
     ]
 
-    # Trigger parallel startup of baseline workers
     spawn(fn ->
       wait_for_alive(sup_proc)
       1..config.baseline_workers
@@ -85,8 +88,20 @@ defmodule ElasticPool do
     Supervisor.init(children, strategy: :one_for_one)
   end
 
-  def status(name \\ __MODULE__) do
-    ElasticPool.Pool.status(Module.concat(name, Pool))
+  # --- High Performance Accessors ---
+
+  def total_workers(name), do: get_stat(name, :total_workers)
+  def available_workers(name), do: get_stat(name, :available_workers)
+  def peak_workers(name), do: get_stat(name, :peak_workers)
+  def waiting_clients(name), do: get_stat(name, :waiting_clients)
+
+  defp get_stat(name, key) do
+    stats_table = Module.concat(name, Stats)
+    # lookup_element returns just the value (index 2), creating zero garbage
+    :ets.lookup_element(stats_table, key, 2)
+  rescue
+    # Handle cases where the table isn't initialized yet
+    ArgumentError -> 0
   end
 
   defp wait_until_ready(name, baseline, timeout) do
@@ -95,7 +110,7 @@ defmodule ElasticPool do
   end
 
   defp do_wait_until_ready(name, baseline, timeout, start) do
-    if status(name).total_workers >= baseline do
+    if total_workers(name) >= baseline do
       :ok
     else
       now = System.monotonic_time(:millisecond)

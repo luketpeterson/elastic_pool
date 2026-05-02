@@ -126,11 +126,10 @@ defmodule LoadTest.Harness do
   end
 
   defp finish(pool, results, total) do
-    status = ElasticPool.status(pool)
-    process_results(results, total, status)
+    process_results(pool, results, total)
   end
 
-  defp process_results(results, total, status) do
+  defp process_results(pool, results, total) do
     result_count = length(results)
     # Adjust latency for expected sleep to see system overhead/queue time
     latencies = Enum.map(results, fn {{:ok, s}, l} -> l / 1000 - s end)
@@ -140,7 +139,10 @@ defmodule LoadTest.Harness do
       p95 = Enum.sort(latencies) |> Enum.at(max(0, round(result_count * 0.95) - 1))
 
       IO.puts "\n\nSuccess: #{result_count}/#{total}"
-      IO.puts "Pool Status: #{inspect(status)}"
+      IO.puts "Total Workers: #{ElasticPool.total_workers(pool)}"
+      IO.puts "Peak Workers: #{ElasticPool.peak_workers(pool)}"
+      IO.puts "Available Workers: #{ElasticPool.available_workers(pool)}"
+      IO.puts "Waiting Clients: #{ElasticPool.waiting_clients(pool)}"
       IO.puts "Avg Excess Latency: #{Float.round(avg, 2)}ms"
       IO.puts "P95 Excess Latency: #{Float.round(p95, 2)}ms"
     end

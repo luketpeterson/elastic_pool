@@ -61,12 +61,13 @@ defmodule ElasticPoolTest do
     )
 
     end_time = System.monotonic_time(:millisecond)
-    status = ElasticPool.status(name)
+    total_workers = ElasticPool.total_workers(name)
+    peak_workers = ElasticPool.peak_workers(name)
     duration = end_time - start_time
 
     Supervisor.stop(name)
 
-    assert status.peak_workers == 10
+    assert peak_workers == 10
     assert duration < 500, "Startup took too long: #{duration}ms"
   end
 
@@ -90,8 +91,7 @@ defmodule ElasticPoolTest do
       baseline_workers: 1
     )
 
-    status = ElasticPool.status(name)
-    assert status.total_workers == 1
+    assert ElasticPool.total_workers(name) == 1
     Supervisor.stop(name)
   end
 end

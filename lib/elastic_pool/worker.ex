@@ -25,7 +25,7 @@ defmodule ElasticPool.Worker do
   defmacro __using__(_opts) do
     quote do
       @behaviour ElasticPool.Worker
-      
+
       @impl true
       def init(args), do: args
 

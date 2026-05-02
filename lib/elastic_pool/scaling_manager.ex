@@ -28,7 +28,7 @@ defmodule ElasticPool.ScalingManager do
       cooldown_ms: config.cooldown_ms,
       max_workers: config.max_workers,
       scale_threshold: config.scale_threshold,
-      stats_table: config.stats_table,
+      pool_name: config.name,
       supervisor: config.supervisor,
       config: config
     }}
@@ -47,12 +47,12 @@ defmodule ElasticPool.ScalingManager do
         {:noreply, state}
 
       true ->
-        # Read from ETS - fast and non-blocking
-        [{:total_ready, total_ready}] = :ets.lookup(state.stats_table, :total_ready)
-        [{:waiting_clients, waiting}] = :ets.lookup(state.stats_table, :waiting_clients)
+        # Use the high-performance public accessors
+        total_ready = ElasticPool.total_workers(state.pool_name)
+        waiting = ElasticPool.waiting_clients(state.pool_name)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
-          # Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
+          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
 
           manager_pid = self()
           Task.start(fn ->
