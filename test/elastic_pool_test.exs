@@ -61,7 +61,6 @@ defmodule ElasticPoolTest do
     )
 
     end_time = System.monotonic_time(:millisecond)
-    total_workers = ElasticPool.total_workers(name)
     peak_workers = ElasticPool.peak_workers(name)
     duration = end_time - start_time
 
@@ -80,6 +79,7 @@ defmodule ElasticPoolTest do
     )
 
     assert ElasticPool.call(name, :ping) == :pong
+    assert ElasticPool.request_count(name) == 1
     Supervisor.stop(name)
   end
 
@@ -98,7 +98,7 @@ defmodule ElasticPoolTest do
   test "StatsPoller emits periodic telemetry" do
     name = :poller_test
     test_pid = self()
-    
+
     # Attach a temporary telemetry handler
     handler_id = "test-poller-handler"
     :telemetry.attach(handler_id, [:elastic_pool, :pool, :status], fn _name, measurements, metadata, _config ->

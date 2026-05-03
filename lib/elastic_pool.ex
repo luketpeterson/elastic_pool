@@ -51,7 +51,8 @@ defmodule ElasticPool do
         total_workers: 0,
         available_workers: 0,
         peak_workers: 0,
-        waiting_clients: 0
+        waiting_clients: 0,
+        request_count: 0
       ])
     end
 
@@ -99,6 +100,7 @@ defmodule ElasticPool do
   def available_workers(name), do: get_stat(name, :available_workers)
   def peak_workers(name), do: get_stat(name, :peak_workers)
   def waiting_clients(name), do: get_stat(name, :waiting_clients)
+  def request_count(name), do: get_stat(name, :request_count)
 
   defp get_stat(name, key) do
     stats_table = Module.concat(name, Stats)

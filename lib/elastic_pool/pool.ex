@@ -41,6 +41,9 @@ defmodule ElasticPool.Pool do
 
   @impl true
   def handle_call(:checkout, from, state) do
+    # Efficiently increment request count on every checkout attempt
+    :ets.update_counter(state.stats_table, :request_count, {2, 1})
+
     case state.available do
       [pid | rest] ->
         new_state = %{state | available: rest}
@@ -52,8 +55,6 @@ defmodule ElasticPool.Pool do
         new_state = %{state | waiting: new_waiting}
         update_ets(new_state)
 
-        # Notify the ScalingManager to evaluate.
-        # The Policy will decide if this failure justifies scaling.
         ElasticPool.ScalingManager.request_scale_up(state.manager)
 
         {:noreply, new_state}
