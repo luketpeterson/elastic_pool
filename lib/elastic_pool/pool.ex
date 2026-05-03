@@ -1,6 +1,7 @@
 defmodule ElasticPool.Pool do
   @moduledoc """
-  A simple queue-based pool for Elastic workers.
+  A queue-based pool for workers that takes worker resource cost and startup latency
+  into account
   """
   use GenServer
   require Logger
@@ -35,9 +36,7 @@ defmodule ElasticPool.Pool do
       pool_name: config.name
     }
 
-    # Initialize ETS with full state
     update_ets(state)
-
     {:ok, state}
   end
 
@@ -47,7 +46,6 @@ defmodule ElasticPool.Pool do
       [pid | rest] ->
         new_state = %{state | available: rest}
         update_ets(new_state)
-        emit_telemetry(new_state)
         {:reply, {:ok, nil, pid}, new_state}
 
       [] ->
@@ -55,7 +53,6 @@ defmodule ElasticPool.Pool do
         waiting_count = :queue.len(new_waiting)
         new_state = %{state | waiting: new_waiting}
         update_ets(new_state)
-        emit_telemetry(new_state)
 
         if waiting_count >= state.scale_threshold do
           ElasticPool.ScalingManager.request_scale_up(state.manager)
@@ -77,7 +74,6 @@ defmodule ElasticPool.Pool do
           GenServer.reply(from, {:ok, nil, pid})
           new_state = %{state | waiting: rest}
           update_ets(new_state)
-          emit_telemetry(new_state)
           {:noreply, new_state}
 
         {:empty, _} ->
@@ -86,14 +82,12 @@ defmodule ElasticPool.Pool do
           else
             new_state = %{state | available: [pid | state.available]}
             update_ets(new_state)
-            emit_telemetry(new_state)
             {:noreply, new_state}
           end
       end
     else
       new_state = handle_down(state, pid)
       update_ets(new_state)
-      emit_telemetry(new_state)
       {:noreply, new_state}
     end
   end
@@ -102,7 +96,6 @@ defmodule ElasticPool.Pool do
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     new_state = handle_down(state, pid)
     update_ets(new_state)
-    emit_telemetry(new_state)
     {:noreply, new_state}
   end
 
@@ -117,18 +110,6 @@ defmodule ElasticPool.Pool do
     ]
     :ets.insert(state.stats_table, stats)
     state
-  end
-
-  defp emit_telemetry(state) do
-    :telemetry.execute([:elastic_pool, :pool, :update],
-      %{
-        total_workers: map_size(state.monitors),
-        available_workers: length(state.available),
-        peak_workers: state.peak_workers,
-        waiting_clients: :queue.len(state.waiting)
-      },
-      %{pool_name: state.pool_name}
-    )
   end
 
   defp ensure_monitored(state, pid) do

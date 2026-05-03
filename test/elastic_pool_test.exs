@@ -94,4 +94,32 @@ defmodule ElasticPoolTest do
     assert ElasticPool.total_workers(name) == 1
     Supervisor.stop(name)
   end
+
+  test "StatsPoller emits periodic telemetry" do
+    name = :poller_test
+    test_pid = self()
+    
+    # Attach a temporary telemetry handler
+    handler_id = "test-poller-handler"
+    :telemetry.attach(handler_id, [:elastic_pool, :pool, :status], fn _name, measurements, metadata, _config ->
+      send(test_pid, {:telemetry_event, measurements, metadata})
+    end, nil)
+
+    {:ok, _pool_pid} = ElasticPool.start_link(
+      name: name,
+      worker_handler: ElasticPoolTest.TestWorker,
+      baseline_workers: 2
+    )
+
+    # Start the poller with a very short interval for the test
+    {:ok, _poller_pid} = ElasticPool.StatsPoller.start_link(pool: name, interval: 100)
+
+    # We should receive a heartbeat
+    assert_receive {:telemetry_event, measurements, %{pool_name: ^name}}, 500
+    assert measurements.total_workers == 2
+
+    # Cleanup
+    :telemetry.detach(handler_id)
+    Supervisor.stop(name)
+  end
 end

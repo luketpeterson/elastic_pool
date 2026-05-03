@@ -47,12 +47,17 @@ defmodule ElasticPool.ScalingManager do
         {:noreply, state}
 
       true ->
-        # Use the high-performance public accessors
         total_ready = ElasticPool.total_workers(state.pool_name)
         waiting = ElasticPool.waiting_clients(state.pool_name)
 
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
           Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
+
+          # Emit high-signal scaling event
+          :telemetry.execute([:elastic_pool, :pool, :scale_up],
+            %{total_workers: total_ready + 1},
+            %{pool_name: state.pool_name}
+          )
 
           manager_pid = self()
           Task.start(fn ->
