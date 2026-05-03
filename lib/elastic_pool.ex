@@ -55,6 +55,7 @@ defmodule ElasticPool do
       ])
     end
 
+    # Group the configuration
     config = %{
       name: name,
       pool: pool_proc,
@@ -63,8 +64,12 @@ defmodule ElasticPool do
       stats_table: stats_table,
       max_workers: opts[:max_workers] || 8,
       baseline_workers: opts[:baseline_workers] || 2,
-      cooldown_ms: opts[:cooldown_ms] || 500,
-      scale_threshold: opts[:scale_threshold] || 10,
+
+      # Scaling Policy Configuration
+      scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,
+      scaling_policy_opts: opts[:scaling_policy_opts] || [],
+
+      # Worker Configuration
       worker_handler: worker_handler,
       worker_args: worker_args
     }
@@ -97,10 +102,8 @@ defmodule ElasticPool do
 
   defp get_stat(name, key) do
     stats_table = Module.concat(name, Stats)
-    # lookup_element returns just the value (index 2), creating zero garbage
     :ets.lookup_element(stats_table, key, 2)
   rescue
-    # Handle cases where the table isn't initialized yet
     ArgumentError -> 0
   end
 

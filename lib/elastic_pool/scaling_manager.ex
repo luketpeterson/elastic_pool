@@ -1,7 +1,7 @@
 defmodule ElasticPool.ScalingManager do
   @moduledoc """
-  Global gatekeeper for scaling. Ensures only one worker is spinning up
-  at a time and respects cooldowns.
+  Generic coordinator for scaling. Orchestrates worker creation/destruction
+  based on decisions from a pluggable ScalingPolicy.
   """
   use GenServer
   require Logger
@@ -11,7 +11,7 @@ defmodule ElasticPool.ScalingManager do
   end
 
   def request_scale_up(manager) do
-    GenServer.cast(manager, :request_scale_up)
+    GenServer.cast(manager, :evaluate)
   end
 
   def worker_ready(manager) do
@@ -22,61 +22,68 @@ defmodule ElasticPool.ScalingManager do
 
   @impl true
   def init(config) do
+    policy_mod = config.scaling_policy
+    # Pass a unified map with clear namespaces
+    policy_state = policy_mod.init(%{
+      policy_opts: config.scaling_policy_opts,
+      pool_config: config
+    })
+
     {:ok, %{
       starting: false,
-      last_scale_time: System.monotonic_time(:millisecond) - config.cooldown_ms,
-      cooldown_ms: config.cooldown_ms,
-      max_workers: config.max_workers,
-      scale_threshold: config.scale_threshold,
       pool_name: config.name,
       supervisor: config.supervisor,
-      config: config
+      config: config,
+      policy_mod: policy_mod,
+      policy_state: policy_state
     }}
   end
 
   @impl true
-  def handle_cast(:request_scale_up, state) do
-    now = System.monotonic_time(:millisecond)
-    cooldown_passed = (now - state.last_scale_time) > state.cooldown_ms
+  def handle_cast(:evaluate, state) do
+    if state.starting do
+      {:noreply, state}
+    else
+      stats = %{
+        total_workers: ElasticPool.total_workers(state.pool_name),
+        available_workers: ElasticPool.available_workers(state.pool_name),
+        peak_workers: ElasticPool.peak_workers(state.pool_name),
+        waiting_clients: ElasticPool.waiting_clients(state.pool_name)
+      }
 
-    cond do
-      state.starting ->
-        {:noreply, state}
+      case state.policy_mod.handle_stats(stats, state.policy_state) do
+        {:scale_up, count, new_policy_state} ->
+          perform_scale_up(count, state)
+          {:noreply, %{state | starting: true, policy_state: new_policy_state}}
 
-      not cooldown_passed ->
-        {:noreply, state}
+        {:scale_down, count, new_policy_state} ->
+          Logger.info("[ScalingManager] Policy requested scale down of #{count} workers (not implemented)")
+          {:noreply, %{state | policy_state: new_policy_state}}
 
-      true ->
-        total_ready = ElasticPool.total_workers(state.pool_name)
-        waiting = ElasticPool.waiting_clients(state.pool_name)
-
-        if total_ready < state.max_workers and waiting >= state.scale_threshold do
-          Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
-
-          # Emit scale_up event
-          :telemetry.execute([:elastic_pool, :pool, :scale_up],
-            %{total_workers: total_ready + 1},
-            %{pool_name: state.pool_name}
-          )
-
-          manager_pid = self()
-          Task.start(fn ->
-            case ElasticPool.WorkerSupervisor.start_worker(state.supervisor, state.config) do
-              {:ok, _pid} -> :ok
-              {:error, reason} ->
-                Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
-                GenServer.cast(manager_pid, :worker_ready)
-            end
-          end)
-          {:noreply, %{state | starting: true, last_scale_time: now}}
-        else
-          {:noreply, state}
-        end
+        {:none, new_policy_state} ->
+          {:noreply, %{state | policy_state: new_policy_state}}
+      end
     end
   end
 
   @impl true
   def handle_cast(:worker_ready, state) do
     {:noreply, %{state | starting: false}}
+  end
+
+  defp perform_scale_up(count, state) do
+    Logger.info("[ScalingManager] Scaling up #{count} worker(s)")
+    manager_pid = self()
+
+    for _ <- 1..count do
+      Task.start(fn ->
+        case ElasticPool.WorkerSupervisor.start_worker(state.supervisor, state.config) do
+          {:ok, _pid} -> :ok
+          {:error, reason} ->
+            Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
+            GenServer.cast(manager_pid, :worker_ready)
+        end
+      end)
+    end
   end
 end

@@ -60,7 +60,7 @@ defmodule LoadTest do
       worker_handler: LoadTest.DummyWorker,
       max_workers: 8,
       baseline_workers: 2,
-      scale_threshold: 10
+      scaling_policy_opts: [scale_threshold: 10]
     )
 
     # 2. Perform work using ElasticPool.call/2

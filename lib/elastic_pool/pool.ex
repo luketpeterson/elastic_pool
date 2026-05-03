@@ -30,7 +30,6 @@ defmodule ElasticPool.Pool do
       waiting: :queue.new(),
       monitors: %{}, # pid -> ref
       peak_workers: 0,
-      scale_threshold: config.scale_threshold,
       manager: config.manager,
       stats_table: config.stats_table,
       pool_name: config.name
@@ -50,13 +49,12 @@ defmodule ElasticPool.Pool do
 
       [] ->
         new_waiting = :queue.in(from, state.waiting)
-        waiting_count = :queue.len(new_waiting)
         new_state = %{state | waiting: new_waiting}
         update_ets(new_state)
 
-        if waiting_count >= state.scale_threshold do
-          ElasticPool.ScalingManager.request_scale_up(state.manager)
-        end
+        # Notify the ScalingManager to evaluate.
+        # The Policy will decide if this failure justifies scaling.
+        ElasticPool.ScalingManager.request_scale_up(state.manager)
 
         {:noreply, new_state}
     end
