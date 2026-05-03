@@ -53,7 +53,7 @@ defmodule ElasticPool.ScalingManager do
         if total_ready < state.max_workers and waiting >= state.scale_threshold do
           Logger.info("[ScalingManager] Scaling up. Ready: #{total_ready}, Waiting: #{waiting}")
 
-          # Emit high-signal scaling event
+          # Emit scale_up event
           :telemetry.execute([:elastic_pool, :pool, :scale_up],
             %{total_workers: total_ready + 1},
             %{pool_name: state.pool_name}
