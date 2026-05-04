@@ -45,6 +45,18 @@ defmodule ElasticPool.IntegrationTest do
     end
   end
 
+  defmodule OverTargetPolicy do
+    @behaviour ElasticPool.ScalingPolicy
+
+    @impl true
+    def init(_opts), do: %{}
+
+    @impl true
+    def handle_event(_event, _pool, state) do
+      {100, state}
+    end
+  end
+
   test "scaling up and down based on request count with lifecycle tracking" do
     name = :scheduled_scaling_test
     test_pid = self()
@@ -54,6 +66,7 @@ defmodule ElasticPool.IntegrationTest do
         name: name,
         worker_handler: TrackingWorker,
         baseline_workers: 2,
+        max_workers: 20,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
       )
@@ -62,7 +75,7 @@ defmodule ElasticPool.IntegrationTest do
     assert ElasticPool.target_workers(name) == 2
     assert ElasticPool.active_workers(name) == 2
     assert ElasticPool.available_workers(name) == 2
-    
+
     for _ <- 1..2 do
       assert_receive {:worker_init, _pid}
     end
@@ -77,10 +90,10 @@ defmodule ElasticPool.IntegrationTest do
     wait_for_target(name, 20)
     # Wait for all 20 workers to be active AND idle
     wait_for_idle(name)
-    
+
     assert ElasticPool.active_workers(name) == 20
     assert ElasticPool.available_workers(name) == 20
-    
+
     # Check inits (exactly 18 new)
     for _ <- 1..18 do
       assert_receive {:worker_init, _pid}, 1000
@@ -96,7 +109,7 @@ defmodule ElasticPool.IntegrationTest do
     wait_for_target(name, 5)
     # Wait for pool to settle at 5 workers and be idle
     wait_for_idle(name)
-    
+
     assert ElasticPool.active_workers(name) == 5
     assert ElasticPool.available_workers(name) == 5
 
@@ -125,6 +138,7 @@ defmodule ElasticPool.IntegrationTest do
         name: name,
         worker_handler: TrackingWorker,
         baseline_workers: 10,
+        max_workers: 10,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
       )
@@ -150,7 +164,35 @@ defmodule ElasticPool.IntegrationTest do
       "ScalingManager crashed during scale-down! This would mean our merged supervisor/manager is unstable."
 
     assert ElasticPool.active_workers(name) == 5
-    
+
+    Supervisor.stop(name)
+  end
+
+  test "ScalingManager enforces max_workers as a hard cap" do
+    name = :max_worker_cap_test
+    test_pid = self()
+
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: TrackingWorker,
+        baseline_workers: 1,
+        max_workers: 3,
+        scaling_policy: OverTargetPolicy,
+        worker_args: [test_pid: test_pid]
+      )
+
+    assert_receive {:worker_init, _pid}, 1000
+
+    for _ <- 1..10 do
+      assert ElasticPool.call(name, :ping) == :pong
+    end
+
+    wait_for_idle(name)
+
+    assert ElasticPool.active_workers(name) == 3
+    assert ElasticPool.available_workers(name) == 3
+
     Supervisor.stop(name)
   end
 
@@ -198,9 +240,9 @@ defmodule ElasticPool.IntegrationTest do
     # The ScalingManager should start a new one immediately.
     assert_receive {:worker_init, second_pid}, 1000
     assert second_pid != first_pid
-    
-    # NEW: Deterministic Sync Barrier. 
-    # By calling :sys.get_state on the Pool, we guarantee that the 
+
+    # NEW: Deterministic Sync Barrier.
+    # By calling :sys.get_state on the Pool, we guarantee that the
     # 'worker_ready' cast has been fully processed before we check the stats.
     :sys.get_state(Module.concat(name, Pool))
 
@@ -223,7 +265,7 @@ defmodule ElasticPool.IntegrationTest do
   defp wait_for_idle(name, retries \\ 100) do
     active = ElasticPool.active_workers(name)
     available = ElasticPool.available_workers(name)
-    
+
     if (active > 0 and active == available) or retries == 0 do
       :ok
     else

@@ -31,10 +31,12 @@ defmodule ElasticPool.ScalingManager do
   def init(config) do
     Process.flag(:trap_exit, true)
 
+    target = min(config.baseline_workers, config.max_workers)
+
     state = %{
       config: config,
       pool_name: config.name,
-      target: config.baseline_workers,
+      target: target,
       workers: MapSet.new(),
       pending_count: 0
     }
@@ -51,6 +53,7 @@ defmodule ElasticPool.ScalingManager do
 
   @impl true
   def handle_cast({:set_target, target}, state) do
+    target = min(target, state.config.max_workers)
     {:noreply, reconcile(target, %{state | target: target})}
   end
 
@@ -94,7 +97,7 @@ defmodule ElasticPool.ScalingManager do
 
     if needed > 0 do
       Logger.info("[ScalingManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}")
-      
+
       new_workers = Enum.reduce(1..needed, state.workers, fn _, acc ->
         case start_worker(state.config) do
           {:ok, pid} -> MapSet.put(acc, pid)
@@ -104,7 +107,7 @@ defmodule ElasticPool.ScalingManager do
 
       %{state | workers: new_workers, pending_count: state.pending_count + needed}
     else
-      # Scale-down is handled by the Pool calling stop_worker/2 when 
+      # Scale-down is handled by the Pool calling stop_worker/2 when
       # workers check in, or we could proactively kill idle workers here.
       # For now, we follow the "drain" strategy where Pool dismisses them.
       state

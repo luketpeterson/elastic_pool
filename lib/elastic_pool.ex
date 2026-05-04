@@ -4,6 +4,25 @@ defmodule ElasticPool do
   """
   use Supervisor
 
+  @doc """
+  Starts an elastic pool.
+
+  ## Options
+
+  - `:worker_handler` - worker module implementing `ElasticPool.Worker`
+  - `:worker_args` - arguments passed to each worker
+  - `:baseline_workers` - pool size at initialization, defaults to `2`
+  - `:max_workers` - absolute ceiling on the number of workers that may be
+    started, regardless of scaling policy.  Use `max_workers` when each worker
+    represents a specific and finite resource that should not be over-committed,
+    such as a physical CPU core, a fixed-size license pool, or some other hard
+    capacity limit that should never be exceeded.
+  - `:scaling_policy` - scaling policy module, defaults to
+    `ElasticPool.Policies.Threshold`
+  - `:scaling_policy_opts` - options passed to the scaling policy
+  - `:start_timeout` - time in ms to wait for initial workers to come up, defaults
+    to `5000`
+  """
   def start_link(opts) do
     name = opts[:name] || __MODULE__
     baseline = opts[:baseline_workers] || 2

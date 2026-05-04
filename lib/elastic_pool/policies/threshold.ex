@@ -17,7 +17,6 @@ defmodule ElasticPool.Policies.Threshold do
     %{
       available_reserve: opts[:available_reserve] || 4,
       scale_up_threshold: opts[:scale_up_threshold] || 10,
-      max_workers: pool.max_workers,
       baseline_workers: pool.baseline_workers
     }
   end
