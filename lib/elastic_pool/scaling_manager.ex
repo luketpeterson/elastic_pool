@@ -32,7 +32,7 @@ defmodule ElasticPool.ScalingManager do
 
   @impl true
   def handle_cast({:set_target, target}, state) do
-    current_total = ElasticPool.total_workers(state.pool_name)
+    current_total = ElasticPool.target_workers(state.pool_name)
     # Reconcile: How many do we need to start to hit the target, 
     # accounting for those already in the process of starting?
     needed = target - (current_total + state.pending_count)

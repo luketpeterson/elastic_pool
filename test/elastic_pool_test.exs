@@ -91,7 +91,7 @@ defmodule ElasticPoolTest do
       baseline_workers: 1
     )
 
-    assert ElasticPool.total_workers(name) == 1
+    assert ElasticPool.target_workers(name) == 1
     Supervisor.stop(name)
   end
 
@@ -116,7 +116,7 @@ defmodule ElasticPoolTest do
 
     # We should receive a heartbeat
     assert_receive {:telemetry_event, measurements, %{pool_name: ^name}}, 500
-    assert measurements.total_workers == 2
+    assert measurements.target_workers == 2
 
     # Cleanup
     :telemetry.detach(handler_id)

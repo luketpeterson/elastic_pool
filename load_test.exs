@@ -139,10 +139,7 @@ defmodule LoadTest.Harness do
       p95 = Enum.sort(latencies) |> Enum.at(max(0, round(result_count * 0.95) - 1))
 
       IO.puts "\n\nSuccess: #{result_count}/#{total}"
-      IO.puts "Total Workers: #{ElasticPool.total_workers(pool)}"
       IO.puts "Peak Workers: #{ElasticPool.peak_workers(pool)}"
-      IO.puts "Available Workers: #{ElasticPool.available_workers(pool)}"
-      IO.puts "Waiting Clients: #{ElasticPool.waiting_clients(pool)}"
       IO.puts "Avg Excess Latency: #{Float.round(avg, 2)}ms"
       IO.puts "P95 Excess Latency: #{Float.round(p95, 2)}ms"
     end

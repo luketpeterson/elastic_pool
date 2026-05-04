@@ -33,7 +33,7 @@ defmodule ElasticPool.StatsPoller do
     available = ElasticPool.available_workers(state.pool)
 
     measurements = %{
-      total_workers: ElasticPool.total_workers(state.pool),
+      target_workers: ElasticPool.target_workers(state.pool),
       active_workers: active,
       available_workers: available,
       busy_workers: active - available,

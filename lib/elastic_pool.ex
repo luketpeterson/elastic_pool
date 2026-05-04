@@ -48,7 +48,7 @@ defmodule ElasticPool do
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
       :ets.insert(stats_table, [
-        total_workers: 0,
+        target_workers: opts[:baseline_workers] || 2,
         active_workers: 0,
         available_workers: 0,
         peak_workers: 0,
@@ -99,9 +99,9 @@ defmodule ElasticPool do
 
   @doc """
   Returns the 'Target' number of workers the pool intends to have.
-  Identity: `starting_or_stopping_workers = total_workers - active_workers`
+  Identity: `starting_workers = target_workers - active_workers`
   """
-  def total_workers(name), do: get_stat(name, :total_workers)
+  def target_workers(name), do: get_stat(name, :target_workers)
 
   @doc """
   Returns the number of workers that are currently alive and monitored by the pool.
@@ -142,7 +142,7 @@ defmodule ElasticPool do
   end
 
   defp do_wait_until_ready(name, baseline, timeout, start) do
-    if total_workers(name) >= baseline do
+    if active_workers(name) >= baseline do
       :ok
     else
       now = System.monotonic_time(:millisecond)

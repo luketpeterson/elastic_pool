@@ -124,7 +124,7 @@ defmodule ElasticPool.Pool do
     if target != state.target_count do
       ElasticPool.ScalingManager.set_target(state.manager, target)
       # Update the intent (total) stat immediately
-      :ets.insert(state.stats_table, {:total_workers, target})
+      :ets.insert(state.stats_table, {:target_workers, target})
       %{state | policy_state: new_policy_state, target_count: target}
     else
       %{state | policy_state: new_policy_state}

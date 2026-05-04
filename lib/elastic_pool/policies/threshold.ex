@@ -16,7 +16,7 @@ defmodule ElasticPool.Policies.Threshold do
 
   @impl true
   def handle_event(event, pool, state) do
-    total = ElasticPool.total_workers(pool)
+    total = ElasticPool.target_workers(pool)
     waiting = ElasticPool.waiting_clients(pool)
 
     target =
