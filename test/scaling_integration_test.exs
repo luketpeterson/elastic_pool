@@ -154,6 +154,63 @@ defmodule ElasticPool.IntegrationTest do
     Supervisor.stop(name)
   end
 
+  defmodule TrackingCrashingWorker do
+    use ElasticPool.Worker
+
+    @impl true
+    def init(args) do
+      send(args[:test_pid], {:worker_init, self()})
+      args
+    end
+
+    @impl true
+    def handle_work(:crash, _from, _state) do
+      raise "Intentional Crash"
+    end
+
+    @impl true
+    def handle_work(:ping, _from, state) do
+      {:reply, :pong, state}
+    end
+  end
+
+  test "instant recovery from worker crash" do
+    name = :crash_recovery_test
+    test_pid = self()
+
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: TrackingCrashingWorker,
+        baseline_workers: 1,
+        worker_args: [test_pid: test_pid]
+      )
+
+    # 1. Capture the initial worker PID
+    assert_receive {:worker_init, first_pid}
+    assert ElasticPool.active_workers(name) == 1
+
+    # 2. Trigger Crash
+    # Use spawn so the test process doesn't crash from the linked worker
+    spawn(fn -> ElasticPool.call(name, :crash) end)
+
+    # 3. Prove Instant Recovery via message passing
+    # The ScalingManager should start a new one immediately.
+    assert_receive {:worker_init, second_pid}, 1000
+    assert second_pid != first_pid
+    
+    # NEW: Deterministic Sync Barrier. 
+    # By calling :sys.get_state on the Pool, we guarantee that the 
+    # 'worker_ready' cast has been fully processed before we check the stats.
+    :sys.get_state(Module.concat(name, Pool))
+
+    # 4. Verify the new worker is functional and stats are correct
+    assert ElasticPool.active_workers(name) == 1
+    assert ElasticPool.call(name, :ping) == :pong
+
+    Supervisor.stop(name)
+  end
+
   defp wait_for_target(name, expected, retries \\ 100) do
     if ElasticPool.target_workers(name) == expected or retries == 0 do
       :ok
