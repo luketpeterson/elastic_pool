@@ -1,7 +1,7 @@
 defmodule ElasticPool.ScalingManager do
   @moduledoc """
   Generic coordinator for scaling. Orchestrates worker creation/destruction
-  based on decisions from a pluggable ScalingPolicy.
+  based on target counts from the Pool.
   """
   use GenServer
   require Logger
@@ -10,8 +10,8 @@ defmodule ElasticPool.ScalingManager do
     GenServer.start_link(__MODULE__, config, name: config.manager)
   end
 
-  def request_scale_up(manager) do
-    GenServer.cast(manager, :evaluate)
+  def set_target(manager, target) do
+    GenServer.cast(manager, {:set_target, target})
   end
 
   def worker_ready(manager) do
@@ -22,57 +22,37 @@ defmodule ElasticPool.ScalingManager do
 
   @impl true
   def init(config) do
-    policy_mod = config.scaling_policy
-    # Pass a unified map with clear namespaces
-    policy_state = policy_mod.init(%{
-      policy_opts: config.scaling_policy_opts,
-      pool_config: config
-    })
-
     {:ok, %{
-      starting: false,
+      pending_count: 0,
       pool_name: config.name,
       supervisor: config.supervisor,
-      config: config,
-      policy_mod: policy_mod,
-      policy_state: policy_state
+      config: config
     }}
   end
 
   @impl true
-  def handle_cast(:evaluate, state) do
-    if state.starting do
-      {:noreply, state}
+  def handle_cast({:set_target, target}, state) do
+    current_total = ElasticPool.total_workers(state.pool_name)
+    # Reconcile: How many do we need to start to hit the target, 
+    # accounting for those already in the process of starting?
+    needed = target - (current_total + state.pending_count)
+
+    if needed > 0 do
+      Logger.info("[ScalingManager] Target is #{target}. Starting #{needed} worker(s) (Pending: #{state.pending_count})")
+      perform_scale_up(needed, state)
+      {:noreply, %{state | pending_count: state.pending_count + needed}}
     else
-      stats = %{
-        total_workers: ElasticPool.total_workers(state.pool_name),
-        available_workers: ElasticPool.available_workers(state.pool_name),
-        peak_workers: ElasticPool.peak_workers(state.pool_name),
-        waiting_clients: ElasticPool.waiting_clients(state.pool_name)
-      }
-
-      case state.policy_mod.handle_stats(stats, state.policy_state) do
-        {:scale_up, count, new_policy_state} ->
-          perform_scale_up(count, state)
-          {:noreply, %{state | starting: true, policy_state: new_policy_state}}
-
-        {:scale_down, count, new_policy_state} ->
-          Logger.info("[ScalingManager] Policy requested scale down of #{count} workers (not implemented)")
-          {:noreply, %{state | policy_state: new_policy_state}}
-
-        {:none, new_policy_state} ->
-          {:noreply, %{state | policy_state: new_policy_state}}
-      end
+      {:noreply, state}
     end
   end
 
   @impl true
   def handle_cast(:worker_ready, state) do
-    {:noreply, %{state | starting: false}}
+    new_pending = max(0, state.pending_count - 1)
+    {:noreply, %{state | pending_count: new_pending}}
   end
 
   defp perform_scale_up(count, state) do
-    Logger.info("[ScalingManager] Scaling up #{count} worker(s)")
     manager_pid = self()
 
     for _ <- 1..count do

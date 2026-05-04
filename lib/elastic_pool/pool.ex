@@ -19,12 +19,18 @@ defmodule ElasticPool.Pool do
   end
 
   def worker_ready(pool, worker_pid) do
-    GenServer.cast(pool, {:checkin, worker_pid})
+    GenServer.cast(pool, {:worker_ready, worker_pid})
   end
 
   # --- Callbacks ---
   @impl true
   def init(config) do
+    policy_mod = config.scaling_policy
+    policy_state = policy_mod.init(%{
+      policy_opts: config.scaling_policy_opts,
+      pool_config: config
+    })
+
     state = %{
       available: [],
       waiting: :queue.new(),
@@ -32,7 +38,10 @@ defmodule ElasticPool.Pool do
       peak_workers: 0,
       manager: config.manager,
       stats_table: config.stats_table,
-      pool_name: config.name
+      pool_name: config.name,
+      policy_mod: policy_mod,
+      policy_state: policy_state,
+      target_count: config.baseline_workers
     }
 
     update_ets(state)
@@ -48,21 +57,38 @@ defmodule ElasticPool.Pool do
       [pid | rest] ->
         new_state = %{state | available: rest}
         update_ets(new_state)
+        new_state = evaluate_policy(:checkout_success, new_state)
         {:reply, {:ok, nil, pid}, new_state}
 
       [] ->
         new_waiting = :queue.in(from, state.waiting)
         new_state = %{state | waiting: new_waiting}
         update_ets(new_state)
-
-        ElasticPool.ScalingManager.request_scale_up(state.manager)
-
+        new_state = evaluate_policy(:checkout_failed, new_state)
         {:noreply, new_state}
     end
   end
 
   @impl true
   def handle_cast({:checkin, pid}, state) do
+    {:noreply, do_checkin(pid, :checkin, state)}
+  end
+
+  @impl true
+  def handle_cast({:worker_ready, pid}, state) do
+    {:noreply, do_checkin(pid, :worker_ready, state)}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    new_state = handle_down(state, pid)
+    update_ets(new_state)
+    {:noreply, evaluate_policy(:checkin, new_state)}
+  end
+
+  # --- Private ---
+
+  defp do_checkin(pid, event, state) do
     if Process.alive?(pid) do
       state = ensure_monitored(state, pid)
       new_peak = max(state.peak_workers, map_size(state.monitors))
@@ -73,32 +99,35 @@ defmodule ElasticPool.Pool do
           GenServer.reply(from, {:ok, nil, pid})
           new_state = %{state | waiting: rest}
           update_ets(new_state)
-          {:noreply, new_state}
+          evaluate_policy(event, new_state)
 
         {:empty, _} ->
           if pid in state.available do
-            {:noreply, state}
+            state
           else
             new_state = %{state | available: [pid | state.available]}
             update_ets(new_state)
-            {:noreply, new_state}
+            evaluate_policy(event, new_state)
           end
       end
     else
       new_state = handle_down(state, pid)
       update_ets(new_state)
-      {:noreply, new_state}
+      evaluate_policy(event, new_state)
     end
   end
 
-  @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    new_state = handle_down(state, pid)
-    update_ets(new_state)
-    {:noreply, new_state}
-  end
+  defp evaluate_policy(event, state) do
+    {target, new_policy_state} =
+      state.policy_mod.handle_event(event, state.pool_name, state.policy_state)
 
-  # --- Private ---
+    if target != state.target_count do
+      ElasticPool.ScalingManager.set_target(state.manager, target)
+      %{state | policy_state: new_policy_state, target_count: target}
+    else
+      %{state | policy_state: new_policy_state}
+    end
+  end
 
   defp update_ets(state) do
     stats = [
@@ -107,6 +136,7 @@ defmodule ElasticPool.Pool do
       peak_workers: state.peak_workers,
       waiting_clients: :queue.len(state.waiting)
     ]
+
     :ets.insert(state.stats_table, stats)
     state
   end

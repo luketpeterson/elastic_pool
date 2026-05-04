@@ -1,25 +1,20 @@
 defmodule ElasticPool.ScalingPolicy do
   @moduledoc """
-  A behaviour for defining scaling policies.
+  A behaviour for defining stateful scaling policies.
   """
 
-  @type stats :: %{
-          total_workers: integer(),
-          available_workers: integer(),
-          peak_workers: integer(),
-          waiting_clients: integer()
-        }
+  @type event :: :checkout_success | :checkout_failed | :checkin | :worker_ready | :heartbeat
+
+  @doc "Initialize the policy state"
+  @callback init(opts :: map()) :: state :: term()
 
   @doc """
-  Initializes the policy state.
-  Receives a map containing:
-    * `:policy_opts` - Choices specific to this policy.
-    * `:pool_config` - Structural metadata about the pool (e.g., max_workers).
+  Evaluates the scaling target based on an event.
+  Returns {new_target, new_state}.
   """
-  @callback init(opts :: map()) :: policy_state :: term()
-
-  @callback handle_stats(stats :: stats(), policy_state :: term()) ::
-              {:scale_up, count :: pos_integer(), new_state :: term()}
-              | {:scale_down, count :: pos_integer(), new_state :: term()}
-              | {:none, new_state :: term()}
+  @callback handle_event(
+    event :: event(),
+    pool_name :: atom(),
+    state :: term()
+  ) :: {target :: pos_integer(), new_state :: term()}
 end
