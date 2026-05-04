@@ -29,11 +29,17 @@ defmodule ElasticPool.StatsPoller do
   @impl true
   def handle_info(:poll, state) do
     # Read absolute state using high-performance accessors
+    active = ElasticPool.active_workers(state.pool)
+    available = ElasticPool.available_workers(state.pool)
+
     measurements = %{
       total_workers: ElasticPool.total_workers(state.pool),
-      available_workers: ElasticPool.available_workers(state.pool),
+      active_workers: active,
+      available_workers: available,
+      busy_workers: active - available,
       peak_workers: ElasticPool.peak_workers(state.pool),
-      waiting_clients: ElasticPool.waiting_clients(state.pool)
+      waiting_clients: ElasticPool.waiting_clients(state.pool),
+      request_count: ElasticPool.request_count(state.pool)
     }
 
     # Emit the heartbeat

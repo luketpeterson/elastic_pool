@@ -1,6 +1,7 @@
 defmodule ElasticPool.Policies.Threshold do
   @moduledoc """
-  A scaling policy based on fixed thresholds and target counts.
+  A reactive scaling policy that increases the pool size by 1 worker until there
+  are fewer than `scale_threshold` requests waiting to be serviced
   """
   @behaviour ElasticPool.ScalingPolicy
 

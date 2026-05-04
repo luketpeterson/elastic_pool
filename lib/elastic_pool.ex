@@ -49,6 +49,7 @@ defmodule ElasticPool do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
       :ets.insert(stats_table, [
         total_workers: 0,
+        active_workers: 0,
         available_workers: 0,
         peak_workers: 0,
         waiting_clients: 0,
@@ -96,10 +97,36 @@ defmodule ElasticPool do
 
   # --- High Performance Accessors ---
 
+  @doc """
+  Returns the 'Target' number of workers the pool intends to have.
+  Identity: `starting_or_stopping_workers = total_workers - active_workers`
+  """
   def total_workers(name), do: get_stat(name, :total_workers)
+
+  @doc """
+  Returns the number of workers that are currently alive and monitored by the pool.
+  """
+  def active_workers(name), do: get_stat(name, :active_workers)
+
+  @doc """
+  Returns the number of workers that are currently idle and ready to take work.
+  Identity: `busy_workers = active_workers - available_workers`
+  """
   def available_workers(name), do: get_stat(name, :available_workers)
+
+  @doc """
+  Returns the highest number of concurrent active workers that have existed since the pool started.
+  """
   def peak_workers(name), do: get_stat(name, :peak_workers)
+
+  @doc """
+  Returns the number of clients currently waiting in the checkout queue.
+  """
   def waiting_clients(name), do: get_stat(name, :waiting_clients)
+
+  @doc """
+  Returns the cumulative number of checkout requests made to the pool since it started.
+  """
   def request_count(name), do: get_stat(name, :request_count)
 
   defp get_stat(name, key) do
