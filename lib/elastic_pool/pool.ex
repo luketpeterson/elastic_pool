@@ -89,45 +89,92 @@ defmodule ElasticPool.Pool do
   # --- Private ---
 
   defp do_checkin(pid, event, state) do
-    if Process.alive?(pid) do
-      state = ensure_monitored(state, pid)
-      new_peak = max(state.peak_workers, map_size(state.monitors))
-      state = %{state | peak_workers: new_peak}
+    # Evaluate policy to get latest target
+    state = evaluate_policy(event, state)
 
-      case :queue.out(state.waiting) do
-        {{:value, from}, rest} ->
-          GenServer.reply(from, {:ok, nil, pid})
-          new_state = %{state | waiting: rest}
-          update_ets(new_state)
-          evaluate_policy(event, new_state)
+    active_count = map_size(state.monitors)
 
-        {:empty, _} ->
-          if pid in state.available do
-            state
-          else
-            new_state = %{state | available: [pid | state.available]}
-            update_ets(new_state)
-            evaluate_policy(event, new_state)
-          end
-      end
+    if state.target_count < active_count do
+      # Drain: We are over target, so don't put this worker back in rotation.
+      # Dismiss it locally and tell the manager to stop it.
+      new_state = dismiss_worker_locally(pid, state)
+      ElasticPool.ScalingManager.stop_worker(state.manager, pid)
+      new_state
     else
-      new_state = handle_down(state, pid)
-      update_ets(new_state)
-      evaluate_policy(event, new_state)
+      # Normal Checkin logic
+      if Process.alive?(pid) do
+        state = ensure_monitored(state, pid)
+        new_peak = max(state.peak_workers, map_size(state.monitors))
+        state = %{state | peak_workers: new_peak}
+
+        case :queue.out(state.waiting) do
+          {{:value, from}, rest} ->
+            GenServer.reply(from, {:ok, nil, pid})
+            new_state = %{state | waiting: rest}
+            update_ets(new_state)
+            new_state
+
+          {:empty, _} ->
+            if pid in state.available do
+              state
+            else
+              new_state = %{state | available: [pid | state.available]}
+              update_ets(new_state)
+              new_state
+            end
+        end
+      else
+        new_state = handle_down(state, pid)
+        update_ets(new_state)
+        new_state
+      end
     end
+  end
+
+  defp dismiss_worker_locally(pid, state) do
+    if ref = Map.get(state.monitors, pid) do
+      Process.demonitor(ref)
+    end
+
+    new_monitors = Map.delete(state.monitors, pid)
+    new_available = Enum.reject(state.available, &(&1 == pid))
+    new_state = %{state | monitors: new_monitors, available: new_available}
+    update_ets(new_state)
+    new_state
   end
 
   defp evaluate_policy(event, state) do
     {target, new_policy_state} =
       state.policy_mod.handle_event(event, state.pool_name, state.policy_state)
 
+    state = %{state | policy_state: new_policy_state}
+
     if target != state.target_count do
       ElasticPool.ScalingManager.set_target(state.manager, target)
-      # Update the intent (total) stat immediately
+      # Update the intent (target) stat immediately
       :ets.insert(state.stats_table, {:target_workers, target})
-      %{state | policy_state: new_policy_state, target_count: target}
+
+      # Handle immediate scale-down if we have idle workers
+      active_count = map_size(state.monitors)
+
+      if target < active_count do
+        to_dismiss_count = active_count - target
+
+        # We can only dismiss workers that are currently idle (available)
+        to_dismiss_immediate_count = min(to_dismiss_count, length(state.available))
+        {to_dismiss, _remaining} = Enum.split(state.available, to_dismiss_immediate_count)
+
+        # Dismiss them locally and notify Manager
+        Enum.reduce(to_dismiss, %{state | target_count: target}, fn pid, acc ->
+          acc = dismiss_worker_locally(pid, acc)
+          ElasticPool.ScalingManager.stop_worker(state.manager, pid)
+          acc
+        end)
+      else
+        %{state | target_count: target}
+      end
     else
-      %{state | policy_state: new_policy_state}
+      state
     end
   end
 

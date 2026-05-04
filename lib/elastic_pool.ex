@@ -42,7 +42,6 @@ defmodule ElasticPool do
 
     pool_proc = Module.concat(name, Pool)
     manager_proc = Module.concat(name, ScalingManager)
-    sup_proc = Module.concat(name, WorkerSupervisor)
     stats_table = Module.concat(name, Stats)
 
     if :ets.whereis(stats_table) == :undefined do
@@ -62,7 +61,6 @@ defmodule ElasticPool do
       name: name,
       pool: pool_proc,
       manager: manager_proc,
-      supervisor: sup_proc,
       stats_table: stats_table,
       max_workers: opts[:max_workers] || 8,
       baseline_workers: opts[:baseline_workers] || 2,
@@ -77,20 +75,9 @@ defmodule ElasticPool do
     }
 
     children = [
-      {ElasticPool.WorkerSupervisor, config},
-      {ElasticPool.ScalingManager, config},
-      {ElasticPool.Pool, config}
+      {ElasticPool.Pool, config},
+      {ElasticPool.ScalingManager, config}
     ]
-
-    spawn(fn ->
-      wait_for_alive(sup_proc)
-      1..config.baseline_workers
-      |> Enum.each(fn _ ->
-        spawn(fn ->
-          ElasticPool.WorkerSupervisor.start_worker(sup_proc, config)
-        end)
-      end)
-    end)
 
     Supervisor.init(children, strategy: :one_for_one)
   end
@@ -99,7 +86,7 @@ defmodule ElasticPool do
 
   @doc """
   Returns the 'Target' number of workers the pool intends to have.
-  Identity: `starting_workers = target_workers - active_workers`
+  Identity: `starting_workers = target_workers - active_workers` (may be negative if the pool is about to scale down).
   """
   def target_workers(name), do: get_stat(name, :target_workers)
 
@@ -152,15 +139,6 @@ defmodule ElasticPool do
         Process.sleep(10)
         do_wait_until_ready(name, baseline, timeout, start)
       end
-    end
-  end
-
-  defp wait_for_alive(name) do
-    if Process.whereis(name) do
-      :ok
-    else
-      Process.sleep(10)
-      wait_for_alive(name)
     end
   end
 end

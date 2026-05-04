@@ -1,7 +1,7 @@
 defmodule ElasticPool.ScalingManager do
   @moduledoc """
-  Generic coordinator for scaling. Orchestrates worker creation/destruction
-  based on target counts from the Pool.
+  The brain of the pool. Manages the worker lifecycle and scaling decisions.
+  Acts as the direct supervisor for all workers by trapping exits.
   """
   use GenServer
   require Logger
@@ -18,32 +18,49 @@ defmodule ElasticPool.ScalingManager do
     GenServer.cast(manager, :worker_ready)
   end
 
+  @doc """
+  Safely stops a worker that has been dismissed by the Pool.
+  """
+  def stop_worker(manager, pid) do
+    GenServer.cast(manager, {:stop_worker, pid})
+  end
+
   # --- Callbacks ---
 
   @impl true
   def init(config) do
-    {:ok, %{
-      pending_count: 0,
+    Process.flag(:trap_exit, true)
+
+    state = %{
+      config: config,
       pool_name: config.name,
-      supervisor: config.supervisor,
-      config: config
-    }}
+      target: config.baseline_workers,
+      workers: MapSet.new(),
+      pending_count: 0
+    }
+
+    # Initial scale-up to baseline
+    {:ok, state, {:continue, :init_workers}}
+  end
+
+  @impl true
+  def handle_continue(:init_workers, state) do
+    new_state = reconcile(state.target, state)
+    {:noreply, new_state}
   end
 
   @impl true
   def handle_cast({:set_target, target}, state) do
-    current_total = ElasticPool.target_workers(state.pool_name)
-    # Reconcile: How many do we need to start to hit the target, 
-    # accounting for those already in the process of starting?
-    needed = target - (current_total + state.pending_count)
+    {:noreply, reconcile(target, %{state | target: target})}
+  end
 
-    if needed > 0 do
-      Logger.info("[ScalingManager] Target is #{target}. Starting #{needed} worker(s) (Pending: #{state.pending_count})")
-      perform_scale_up(needed, state)
-      {:noreply, %{state | pending_count: state.pending_count + needed}}
-    else
-      {:noreply, state}
+  @impl true
+  def handle_cast({:stop_worker, pid}, state) do
+    if MapSet.member?(state.workers, pid) do
+      # Normal exit - won't trigger "crash" recovery
+      Process.exit(pid, :normal)
     end
+    {:noreply, state}
   end
 
   @impl true
@@ -52,18 +69,56 @@ defmodule ElasticPool.ScalingManager do
     {:noreply, %{state | pending_count: new_pending}}
   end
 
-  defp perform_scale_up(count, state) do
-    manager_pid = self()
+  @impl true
+  def handle_info({:EXIT, pid, reason}, state) do
+    new_workers = MapSet.delete(state.workers, pid)
+    state = %{state | workers: new_workers}
 
-    for _ <- 1..count do
-      Task.start(fn ->
-        case ElasticPool.WorkerSupervisor.start_worker(state.supervisor, state.config) do
-          {:ok, _pid} -> :ok
-          {:error, reason} ->
-            Logger.error("[ScalingManager] Failed to start worker: #{inspect(reason)}")
-            GenServer.cast(manager_pid, :worker_ready)
+    case reason do
+      :normal ->
+        # Planned scale-down or clean exit, do nothing.
+        {:noreply, state}
+
+      _other ->
+        Logger.error("[ScalingManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering...")
+        # Instant Recovery: Reconcile immediately to hit target
+        {:noreply, reconcile(state.target, state)}
+    end
+  end
+
+  # --- Private ---
+
+  defp reconcile(target, state) do
+    active_count = MapSet.size(state.workers)
+    needed = target - (active_count + state.pending_count)
+
+    if needed > 0 do
+      Logger.info("[ScalingManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}")
+      
+      new_workers = Enum.reduce(1..needed, state.workers, fn _, acc ->
+        case start_worker(state.config) do
+          {:ok, pid} -> MapSet.put(acc, pid)
+          _ -> acc
         end
       end)
+
+      %{state | workers: new_workers, pending_count: state.pending_count + needed}
+    else
+      # Scale-down is handled by the Pool calling stop_worker/2 when 
+      # workers check in, or we could proactively kill idle workers here.
+      # For now, we follow the "drain" strategy where Pool dismisses them.
+      state
     end
+  end
+
+  defp start_worker(config) do
+    worker_args = [
+      handler: config.worker_handler,
+      pool: config.pool,
+      manager: config.manager
+    ] ++ config.worker_args
+
+    # Link directly to the manager so we can trap exits
+    ElasticPool.Worker.start_link(worker_args)
   end
 end

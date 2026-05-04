@@ -36,7 +36,8 @@ defmodule ElasticPool.Worker do
     end
   end
 
-  use GenServer
+  use GenServer, restart: :temporary
+  require Logger
 
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
 
@@ -72,6 +73,17 @@ defmodule ElasticPool.Worker do
       {:noreply, new_handler_state} ->
         {:noreply, %{state | handler_state: new_handler_state}}
     end
+  end
+
+  @impl true
+  def handle_info({:EXIT, _from, :normal}, state) do
+    {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_info(msg, state) do
+    Logger.error("[Worker] Received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
   end
 
   @impl true
