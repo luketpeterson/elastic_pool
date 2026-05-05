@@ -160,12 +160,11 @@ defmodule ElasticPoolTest do
         worker_handler: FastCrashingWorker,
         initial_workers: 1,
         max_restarts: 2,
-        max_period: 5,
-        start_timeout: 500
+        max_period: 5
       )
 
     # During init failure, start_link returns the error reason
-    assert {:error, :timeout} = result
+    assert {:error, :supervisor_died} = result
     assert Process.whereis(name) == nil
   end
 

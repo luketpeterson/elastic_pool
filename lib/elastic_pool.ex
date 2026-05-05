@@ -34,13 +34,13 @@ defmodule ElasticPool do
 
     case Supervisor.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} ->
-        case wait_until_ready(name, initial, timeout) do
+        case wait_until_ready(name, pid, initial, timeout) do
           :ok ->
             {:ok, pid}
 
-          {:error, :timeout} ->
-            Supervisor.stop(pid)
-            {:error, :timeout}
+          {:error, reason} ->
+            if Process.alive?(pid), do: Supervisor.stop(pid)
+            {:error, reason}
         end
 
       error ->
@@ -156,22 +156,26 @@ defmodule ElasticPool do
     ArgumentError -> 0
   end
 
-  defp wait_until_ready(name, baseline, timeout) do
+  defp wait_until_ready(name, pid, baseline, timeout) do
     start = System.monotonic_time(:millisecond)
-    do_wait_until_ready(name, baseline, timeout, start)
+    do_wait_until_ready(name, pid, baseline, timeout, start)
   end
 
-  defp do_wait_until_ready(name, baseline, timeout, start) do
+  defp do_wait_until_ready(name, pid, baseline, timeout, start) do
     if active_workers(name) >= baseline do
       :ok
     else
-      now = System.monotonic_time(:millisecond)
-
-      if now - start > timeout do
-        {:error, :timeout}
+      if !Process.alive?(pid) do
+        {:error, :supervisor_died}
       else
-        Process.sleep(10)
-        do_wait_until_ready(name, baseline, timeout, start)
+        now = System.monotonic_time(:millisecond)
+
+        if now - start > timeout do
+          {:error, :timeout}
+        else
+          Process.sleep(10)
+          do_wait_until_ready(name, pid, baseline, timeout, start)
+        end
       end
     end
   end

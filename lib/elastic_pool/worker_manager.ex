@@ -18,8 +18,8 @@ defmodule ElasticPool.WorkerManager do
     GenServer.cast(manager, {:set_target, target})
   end
 
-  def worker_ready(manager) do
-    GenServer.cast(manager, :worker_ready)
+  def worker_ready(manager, pid) do
+    GenServer.cast(manager, {:worker_ready, pid})
   end
 
   @doc """
@@ -42,7 +42,7 @@ defmodule ElasticPool.WorkerManager do
       pool_name: config.name,
       target: target,
       workers: MapSet.new(),
-      pending_count: 0,
+      ready_workers: MapSet.new(),
       restarts: []
     }
 
@@ -73,15 +73,16 @@ defmodule ElasticPool.WorkerManager do
   end
 
   @impl true
-  def handle_cast(:worker_ready, state) do
-    new_pending = max(0, state.pending_count - 1)
-    {:noreply, %{state | pending_count: new_pending}}
+  def handle_cast({:worker_ready, pid}, state) do
+    new_ready = MapSet.put(state.ready_workers, pid)
+    {:noreply, %{state | ready_workers: new_ready}}
   end
 
   @impl true
   def handle_info({:EXIT, pid, reason}, state) do
     new_workers = MapSet.delete(state.workers, pid)
-    state = %{state | workers: new_workers}
+    new_ready = MapSet.delete(state.ready_workers, pid)
+    state = %{state | workers: new_workers, ready_workers: new_ready}
 
     case reason do
       :normal ->
@@ -118,12 +119,12 @@ defmodule ElasticPool.WorkerManager do
 
   defp reconcile(target, state, reason \\ nil) do
     active_count = MapSet.size(state.workers)
-    needed = target - (active_count + state.pending_count)
+    needed = target - active_count
 
     if needed > 0 do
       # If no reason was explicitly provided, infer it from current pool state
       start_reason =
-        reason || (if active_count == 0 and state.pending_count == 0, do: :initial, else: :scale_up)
+        reason || (if active_count == 0, do: :initial, else: :scale_up)
 
       new_workers =
         Enum.reduce(1..needed, state.workers, fn _, acc ->
@@ -133,7 +134,7 @@ defmodule ElasticPool.WorkerManager do
           end
         end)
 
-      %{state | workers: new_workers, pending_count: state.pending_count + needed}
+      %{state | workers: new_workers}
     else
       # Scale-down is handled by the Pool calling stop_worker/2 when
       # workers check in, or we could proactively kill idle workers here.
