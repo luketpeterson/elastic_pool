@@ -95,7 +95,7 @@ defmodule ElasticPool.WorkerManager do
             {:noreply, reconcile(state.target, new_state, :recovery)}
 
           {:error, :too_many_crashes} ->
-            {:stop, {:shutdown, :reached_max_restart_intensity}, state}
+            {:stop, :reached_max_restart_intensity, state}
         end
     end
   end

@@ -150,6 +150,7 @@ defmodule ElasticPoolTest do
   @tag :capture_log
   test "pool shuts down when crash intensity is reached" do
     name = :intensity_test
+    Process.flag(:trap_exit, true)
 
     # This should crash immediately on start because initial_workers=1
     # but it will keep trying to reconcile until max_restarts (2) is hit.
@@ -163,9 +164,45 @@ defmodule ElasticPoolTest do
         start_timeout: 500
       )
 
+    # During init failure, start_link returns the error reason
     assert {:error, :timeout} = result
-    # Ensure the process is actually gone
+    assert Process.whereis(name) == nil
+  end
+
+  defmodule WorkCrashingWorker do
+    use ElasticPool.Worker
+    @impl true
+    def handle_work(:crash, _from, _state), do: raise("Work Crash")
+    @impl true
+    def handle_work(:ping, _from, state), do: {:reply, :pong, state}
+  end
+
+  @tag :capture_log
+  test "pool shuts down when crash intensity is reached during work" do
+    name = :work_intensity_test
+    Process.flag(:trap_exit, true)
+
+    {:ok, pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: WorkCrashingWorker,
+        initial_workers: 1,
+        max_restarts: 1,
+        max_period: 5
+      )
+
+    # We need to crash it 2 times to hit max_restarts: 1
+    # 1. First crash
+    spawn(fn -> ElasticPool.call(name, :crash) end)
+    # Wait for the manager to see the crash and start a new one
     Process.sleep(100)
+
+    # 2. Second crash - This should trigger the intensity limit
+    spawn(fn -> ElasticPool.call(name, :crash) end)
+
+    # The entire pool supervisor should stop and send an EXIT signal to us.
+    # Supervisors that stop due to restart intensity exit with :shutdown.
+    assert_receive {:EXIT, ^pid, :shutdown}, 2000
     assert Process.whereis(name) == nil
   end
 
