@@ -54,6 +54,7 @@ defmodule ElasticPool.Worker do
     handler = Keyword.fetch!(args, :handler)
     pool = Keyword.fetch!(args, :pool)
     manager = Keyword.fetch!(args, :manager)
+    start_reason = Keyword.get(args, :start_reason, :unknown)
 
     handler_state = if function_exported?(handler, :init, 1), do: handler.init(args), else: args
 
@@ -61,7 +62,23 @@ defmodule ElasticPool.Worker do
     ElasticPool.WorkerManager.worker_ready(manager)
     ElasticPool.Pool.worker_ready(pool, self())
 
-    {:noreply, %{handler: handler, handler_state: handler_state}}
+    :telemetry.execute(
+      [:elastic_pool, :worker, :start],
+      %{count: 1},
+      %{
+        pool: pool,
+        handler: handler,
+        start_reason: start_reason
+      }
+    )
+
+    {:noreply,
+     %{
+       handler: handler,
+       handler_state: handler_state,
+       pool: pool,
+       start_reason: start_reason
+     }}
   end
 
   @impl true
@@ -95,6 +112,27 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def terminate(reason, state) do
+    stop_reason =
+      case reason do
+        :normal -> :scale_down
+        :shutdown -> :shutdown
+        {:shutdown, _} -> :shutdown
+        _ -> :crash
+      end
+
+    if is_map(state) and Map.has_key?(state, :pool) do
+      :telemetry.execute(
+        [:elastic_pool, :worker, :stop],
+        %{count: 1},
+        %{
+          pool: state.pool,
+          handler: state.handler,
+          stop_reason: stop_reason,
+          exit_reason: reason
+        }
+      )
+    end
+
     if is_map(state) and Map.has_key?(state, :handler) and
          function_exported?(state.handler, :terminate, 2) do
       state.handler.terminate(reason, state.handler_state)

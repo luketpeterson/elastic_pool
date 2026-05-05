@@ -61,6 +61,17 @@ defmodule ElasticPool.IntegrationTest do
     name = :scheduled_scaling_test
     test_pid = self()
 
+    # --- Setup Telemetry Tracking ---
+    handler_id = "telemetry-integration-test-handler"
+    events = [
+      [:elastic_pool, :worker, :start],
+      [:elastic_pool, :worker, :stop]
+    ]
+    :telemetry.attach_many(handler_id, events, &__MODULE__.handle_telemetry/4, %{test_pid: test_pid})
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    # -------------------------------
+
     {:ok, _pid} =
       ElasticPool.start_link(
         name: name,
@@ -77,6 +88,7 @@ defmodule ElasticPool.IntegrationTest do
 
     for _ <- 1..2 do
       assert_receive {:worker_init, _pid}
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
     end
 
     refute_receive {:worker_init, _}, 100
@@ -97,6 +109,7 @@ defmodule ElasticPool.IntegrationTest do
     # Check inits (exactly 18 new)
     for _ <- 1..18 do
       assert_receive {:worker_init, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :scale_up}}
     end
 
     refute_receive {:worker_init, _}, 100
@@ -117,6 +130,7 @@ defmodule ElasticPool.IntegrationTest do
     # Check for exactly 15 termination messages from scale-down
     for _ <- 1..15 do
       assert_receive {:worker_terminated, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :scale_down}}
     end
 
     refute_receive {:worker_terminated, _}, 100
@@ -124,9 +138,10 @@ defmodule ElasticPool.IntegrationTest do
     # 4. Global Termination: Stop the whole pool
     Supervisor.stop(name)
 
-    # The remaining 5 workers should all terminate
+    # The remaining 5 workers should all terminate with :shutdown reason
     for _ <- 1..5 do
       assert_receive {:worker_terminated, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :shutdown}}
     end
 
     refute_receive {:worker_terminated, _}, 100
@@ -225,6 +240,19 @@ defmodule ElasticPool.IntegrationTest do
     name = :crash_recovery_test
     test_pid = self()
 
+    # --- Setup Telemetry Tracking ---
+    handler_id = "telemetry-crash-test-handler"
+
+    :telemetry.attach_many(
+      handler_id,
+      [[:elastic_pool, :worker, :start], [:elastic_pool, :worker, :stop]],
+      &__MODULE__.handle_telemetry/4,
+      %{test_pid: test_pid}
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    # -------------------------------
+
     {:ok, _pid} =
       ElasticPool.start_link(
         name: name,
@@ -233,17 +261,21 @@ defmodule ElasticPool.IntegrationTest do
         worker_args: [test_pid: test_pid]
       )
 
-    # 1. Capture the initial worker PID
+    # 1. Capture the initial worker PID and telemetry
     assert_receive {:worker_init, first_pid}
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
     assert ElasticPool.active_workers(name) == 1
 
     # 2. Trigger Crash
     # Use spawn so the test process doesn't crash from the linked worker
     spawn(fn -> ElasticPool.call(name, :crash) end)
 
-    # 3. Prove Instant Recovery via message passing
+    # 3. Prove Instant Recovery via message passing and telemetry
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :crash}}
+
     # The WorkerManager should start a new one immediately.
     assert_receive {:worker_init, second_pid}, 1000
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :recovery}}
     assert second_pid != first_pid
 
     # NEW: Deterministic Sync Barrier.
@@ -277,5 +309,9 @@ defmodule ElasticPool.IntegrationTest do
       Process.sleep(10)
       wait_for_idle(name, retries - 1)
     end
+  end
+
+  def handle_telemetry(name, measurements, metadata, config) do
+    send(config.test_pid, {:telemetry_event, name, measurements, metadata})
   end
 end

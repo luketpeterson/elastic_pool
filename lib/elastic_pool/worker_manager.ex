@@ -88,33 +88,25 @@ defmodule ElasticPool.WorkerManager do
         {:noreply, state}
 
       _other ->
-        :telemetry.execute(
-          [:elastic_pool, :worker, :crash],
-          %{count: 1},
-          %{pool: state.pool_name, pid: pid, reason: reason}
-        )
-
         # Instant Recovery: Reconcile immediately to hit target
-        {:noreply, reconcile(state.target, state)}
+        {:noreply, reconcile(state.target, state, :recovery)}
     end
   end
 
   # --- Private ---
 
-  defp reconcile(target, state) do
+  defp reconcile(target, state, reason \\ nil) do
     active_count = MapSet.size(state.workers)
     needed = target - (active_count + state.pending_count)
 
     if needed > 0 do
-      :telemetry.execute(
-        [:elastic_pool, :manager, :scale_up],
-        %{count: needed},
-        %{pool: state.pool_name, target: target, active: active_count}
-      )
+      # If no reason was explicitly provided, infer it from current pool state
+      start_reason =
+        reason || (if active_count == 0 and state.pending_count == 0, do: :initial, else: :scale_up)
 
       new_workers =
         Enum.reduce(1..needed, state.workers, fn _, acc ->
-          case start_worker(state.config) do
+          case start_worker(state.config, start_reason) do
             {:ok, pid} -> MapSet.put(acc, pid)
             _ -> acc
           end
@@ -129,12 +121,13 @@ defmodule ElasticPool.WorkerManager do
     end
   end
 
-  defp start_worker(config) do
+  defp start_worker(config, reason) do
     worker_args =
       [
         handler: config.worker_handler,
         pool: config.pool,
-        manager: config.manager
+        manager: config.manager,
+        start_reason: reason
       ] ++ config.worker_args
 
     # Link directly to the manager so we can trap exits
