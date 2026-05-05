@@ -11,6 +11,7 @@ defmodule ElasticPoolTest.SlowInitWorker do
     Process.sleep(250)
     args
   end
+
   @impl true
   def handle_work(_, _, state), do: {:reply, :ok, state}
 end
@@ -34,12 +35,13 @@ defmodule ElasticPoolTest do
     test_pid = self()
     worker_count = 5
 
-    {:ok, _pid} = ElasticPool.start_link(
-      name: name,
-      worker_handler: ElasticPoolTest.TerminationWorker,
-      initial_workers: worker_count,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: ElasticPoolTest.TerminationWorker,
+        initial_workers: worker_count,
+        worker_args: [test_pid: test_pid]
+      )
 
     # Shutdown the pool
     Supervisor.stop(name)
@@ -54,11 +56,12 @@ defmodule ElasticPoolTest do
     name = :slow_startup_test
     start_time = System.monotonic_time(:millisecond)
 
-    {:ok, _pid} = ElasticPool.start_link(
-      name: name,
-      worker_handler: ElasticPoolTest.SlowInitWorker,
-      initial_workers: 10
-    )
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: ElasticPoolTest.SlowInitWorker,
+        initial_workers: 10
+      )
 
     end_time = System.monotonic_time(:millisecond)
     peak_workers = ElasticPool.peak_workers(name)
@@ -72,11 +75,13 @@ defmodule ElasticPoolTest do
 
   test "can perform work via generic call" do
     name = String.to_atom("TestPool_#{:erlang.unique_integer([:positive])}")
-    {:ok, _pid} = ElasticPool.start_link(
-      name: name,
-      worker_handler: ElasticPoolTest.TestWorker,
-      initial_workers: 1
-    )
+
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: ElasticPoolTest.TestWorker,
+        initial_workers: 1
+      )
 
     assert ElasticPool.call(name, :ping) == :pong
     assert ElasticPool.request_count(name) == 1
@@ -85,11 +90,13 @@ defmodule ElasticPoolTest do
 
   test "status shows workers" do
     name = String.to_atom("StatusPool_#{:erlang.unique_integer([:positive])}")
-    {:ok, _pid} = ElasticPool.start_link(
-      name: name,
-      worker_handler: ElasticPoolTest.TestWorker,
-      initial_workers: 1
-    )
+
+    {:ok, _pid} =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: ElasticPoolTest.TestWorker,
+        initial_workers: 1
+      )
 
     assert ElasticPool.target_workers(name) == 1
     Supervisor.stop(name)

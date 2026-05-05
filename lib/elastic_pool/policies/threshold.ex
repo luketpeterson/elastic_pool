@@ -31,6 +31,7 @@ defmodule ElasticPool.Policies.Threshold do
         case event do
           :checkout_failed ->
             waiting = ElasticPool.waiting_clients(pool)
+
             if waiting > state.scale_up_threshold do
               old_target + 1
             else
@@ -39,6 +40,7 @@ defmodule ElasticPool.Policies.Threshold do
 
           :checkin ->
             available = ElasticPool.available_workers(pool)
+
             if available > state.available_reserve do
               max(old_target - 1, 0)
             else

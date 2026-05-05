@@ -32,17 +32,22 @@ defmodule ElasticPool do
     case Supervisor.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} ->
         case wait_until_ready(name, initial, timeout) do
-          :ok -> {:ok, pid}
+          :ok ->
+            {:ok, pid}
+
           {:error, :timeout} ->
             Supervisor.stop(pid)
             {:error, :timeout}
         end
-      error -> error
+
+      error ->
+        error
     end
   end
 
   def call(pool_name \\ __MODULE__, request, timeout \\ 30_000) do
     pool_proc = Module.concat(pool_name, Pool)
+
     case ElasticPool.Pool.checkout(pool_proc, timeout) do
       {:ok, _ref, worker_pid} ->
         try do
@@ -50,7 +55,9 @@ defmodule ElasticPool do
         after
           ElasticPool.Pool.checkin(pool_proc, worker_pid)
         end
-      {:error, reason} -> {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -66,14 +73,15 @@ defmodule ElasticPool do
 
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
-      :ets.insert(stats_table, [
+
+      :ets.insert(stats_table,
         target_workers: opts[:initial_workers] || 2,
         active_workers: 0,
         available_workers: 0,
         peak_workers: 0,
         waiting_clients: 0,
         request_count: 0
-      ])
+      )
     end
 
     # Group the configuration
@@ -153,7 +161,8 @@ defmodule ElasticPool do
       :ok
     else
       now = System.monotonic_time(:millisecond)
-      if (now - start) > timeout do
+
+      if now - start > timeout do
         {:error, :timeout}
       else
         Process.sleep(10)

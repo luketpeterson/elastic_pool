@@ -88,7 +88,8 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def terminate(reason, state) do
-    if is_map(state) and Map.has_key?(state, :handler) and function_exported?(state.handler, :terminate, 2) do
+    if is_map(state) and Map.has_key?(state, :handler) and
+         function_exported?(state.handler, :terminate, 2) do
       state.handler.terminate(reason, state.handler_state)
     else
       :ok

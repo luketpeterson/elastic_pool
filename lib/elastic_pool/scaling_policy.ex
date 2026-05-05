@@ -13,8 +13,8 @@ defmodule ElasticPool.ScalingPolicy do
   Returns {new_target, new_state}.
   """
   @callback handle_event(
-    event :: event(),
-    pool_name :: atom(),
-    state :: term()
-  ) :: {target :: pos_integer(), new_state :: term()}
+              event :: event(),
+              pool_name :: atom(),
+              state :: term()
+            ) :: {target :: pos_integer(), new_state :: term()}
 end

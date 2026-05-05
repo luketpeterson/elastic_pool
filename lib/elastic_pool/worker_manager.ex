@@ -68,6 +68,7 @@ defmodule ElasticPool.WorkerManager do
       # Normal exit - won't trigger "crash" recovery
       Process.exit(pid, :normal)
     end
+
     {:noreply, state}
   end
 
@@ -88,26 +89,33 @@ defmodule ElasticPool.WorkerManager do
         {:noreply, state}
 
       _other ->
-        Logger.error("[WorkerManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering...")
+        Logger.error(
+          "[WorkerManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering..."
+        )
+
         # Instant Recovery: Reconcile immediately to hit target
         {:noreply, reconcile(state.target, state)}
-        end
-        end
+    end
+  end
 
-        # --- Private ---
+  # --- Private ---
 
-        defp reconcile(target, state) do
-        active_count = MapSet.size(state.workers)
-        needed = target - (active_count + state.pending_count)
+  defp reconcile(target, state) do
+    active_count = MapSet.size(state.workers)
+    needed = target - (active_count + state.pending_count)
 
-        if needed > 0 do
-        Logger.info("[WorkerManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}")
-      new_workers = Enum.reduce(1..needed, state.workers, fn _, acc ->
-        case start_worker(state.config) do
-          {:ok, pid} -> MapSet.put(acc, pid)
-          _ -> acc
-        end
-      end)
+    if needed > 0 do
+      Logger.info(
+        "[WorkerManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}"
+      )
+
+      new_workers =
+        Enum.reduce(1..needed, state.workers, fn _, acc ->
+          case start_worker(state.config) do
+            {:ok, pid} -> MapSet.put(acc, pid)
+            _ -> acc
+          end
+        end)
 
       %{state | workers: new_workers, pending_count: state.pending_count + needed}
     else
@@ -119,11 +127,12 @@ defmodule ElasticPool.WorkerManager do
   end
 
   defp start_worker(config) do
-    worker_args = [
-      handler: config.worker_handler,
-      pool: config.pool,
-      manager: config.manager
-    ] ++ config.worker_args
+    worker_args =
+      [
+        handler: config.worker_handler,
+        pool: config.pool,
+        manager: config.manager
+      ] ++ config.worker_args
 
     # Link directly to the manager so we can trap exits
     ElasticPool.Worker.start_link(worker_args)

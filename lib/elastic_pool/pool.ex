@@ -26,15 +26,18 @@ defmodule ElasticPool.Pool do
   @impl true
   def init(config) do
     policy_mod = config.scaling_policy
-    policy_state = policy_mod.init(%{
-      policy_opts: config.scaling_policy_opts,
-      pool_config: config
-    })
+
+    policy_state =
+      policy_mod.init(%{
+        policy_opts: config.scaling_policy_opts,
+        pool_config: config
+      })
 
     state = %{
       available: [],
       waiting: :queue.new(),
-      monitors: %{}, # pid -> ref
+      # pid -> ref
+      monitors: %{},
       peak_workers: 0,
       manager: config.manager,
       stats_table: config.stats_table,
