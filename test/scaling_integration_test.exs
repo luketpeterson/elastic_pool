@@ -220,6 +220,7 @@ defmodule ElasticPool.IntegrationTest do
     end
   end
 
+  @tag :capture_log
   test "instant recovery from worker crash" do
     name = :crash_recovery_test
     test_pid = self()
