@@ -37,7 +37,7 @@ defmodule ElasticPoolTest do
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.TerminationWorker,
-      baseline_workers: worker_count,
+      initial_workers: worker_count,
       worker_args: [test_pid: test_pid]
     )
 
@@ -50,14 +50,14 @@ defmodule ElasticPoolTest do
     end
   end
 
-  test "baseline workers init in parallel" do
+  test "initial workers init in parallel" do
     name = :slow_startup_test
     start_time = System.monotonic_time(:millisecond)
 
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.SlowInitWorker,
-      baseline_workers: 10,
+      initial_workers: 10,
       max_workers: 10
     )
 
@@ -76,7 +76,7 @@ defmodule ElasticPoolTest do
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.TestWorker,
-      baseline_workers: 1
+      initial_workers: 1
     )
 
     assert ElasticPool.call(name, :ping) == :pong
@@ -89,7 +89,7 @@ defmodule ElasticPoolTest do
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.TestWorker,
-      baseline_workers: 1
+      initial_workers: 1
     )
 
     assert ElasticPool.target_workers(name) == 1
@@ -114,7 +114,7 @@ defmodule ElasticPoolTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: ElasticPoolTest.TestWorker,
-        baseline_workers: 2
+        initial_workers: 2
       )
 
     # Start the poller with a very short interval for the test

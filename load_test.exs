@@ -59,7 +59,7 @@ defmodule LoadTest do
       name: LTPool,
       worker_handler: LoadTest.DummyWorker,
       max_workers: 8,
-      baseline_workers: 2,
+      initial_workers: 2,
       scaling_policy_opts: [scale_up_threshold: 10]
     )
 

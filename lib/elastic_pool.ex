@@ -11,7 +11,7 @@ defmodule ElasticPool do
 
   - `:worker_handler` - worker module implementing `ElasticPool.Worker`
   - `:worker_args` - arguments passed to each worker
-  - `:baseline_workers` - pool size at initialization, defaults to `2`
+  - `:initial_workers` - pool size at initialization, defaults to `2`
   - `:max_workers` - absolute ceiling on the number of workers that may be
     started, regardless of scaling policy.  Use `max_workers` when each worker
     represents a specific and finite resource that should not be over-committed,
@@ -25,12 +25,12 @@ defmodule ElasticPool do
   """
   def start_link(opts) do
     name = opts[:name] || __MODULE__
-    baseline = opts[:baseline_workers] || 2
+    initial = opts[:initial_workers] || 2
     timeout = opts[:start_timeout] || 5000
 
     case Supervisor.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} ->
-        case wait_until_ready(name, baseline, timeout) do
+        case wait_until_ready(name, initial, timeout) do
           :ok -> {:ok, pid}
           {:error, :timeout} ->
             Supervisor.stop(pid)
@@ -66,7 +66,7 @@ defmodule ElasticPool do
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
       :ets.insert(stats_table, [
-        target_workers: opts[:baseline_workers] || 2,
+        target_workers: opts[:initial_workers] || 2,
         active_workers: 0,
         available_workers: 0,
         peak_workers: 0,
@@ -82,7 +82,7 @@ defmodule ElasticPool do
       manager: manager_proc,
       stats_table: stats_table,
       max_workers: opts[:max_workers] || 8,
-      baseline_workers: opts[:baseline_workers] || 2,
+      initial_workers: opts[:initial_workers] || 2,
 
       # Scaling Policy Configuration
       scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,

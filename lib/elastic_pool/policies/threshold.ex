@@ -13,11 +13,10 @@ defmodule ElasticPool.Policies.Threshold do
   @behaviour ElasticPool.ScalingPolicy
 
   @impl true
-  def init(%{policy_opts: opts, pool_config: pool}) do
+  def init(%{policy_opts: opts, pool_config: _pool}) do
     %{
       available_reserve: opts[:available_reserve] || 4,
-      scale_up_threshold: opts[:scale_up_threshold] || 10,
-      baseline_workers: pool.baseline_workers
+      scale_up_threshold: opts[:scale_up_threshold] || 10
     }
   end
 
@@ -41,7 +40,7 @@ defmodule ElasticPool.Policies.Threshold do
           :checkin ->
             available = ElasticPool.available_workers(pool)
             if available > state.available_reserve do
-              old_target - 1
+              max(old_target - 1, 0)
             else
               old_target
             end
@@ -54,6 +53,6 @@ defmodule ElasticPool.Policies.Threshold do
         old_target
       end
 
-    {max(target, state.baseline_workers), state}
+    {target, state}
   end
 end

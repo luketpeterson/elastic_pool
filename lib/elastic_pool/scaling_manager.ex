@@ -31,7 +31,7 @@ defmodule ElasticPool.ScalingManager do
   def init(config) do
     Process.flag(:trap_exit, true)
 
-    target = min(config.baseline_workers, config.max_workers)
+    target = min(config.initial_workers, config.max_workers)
 
     state = %{
       config: config,

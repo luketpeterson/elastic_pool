@@ -27,7 +27,7 @@ defmodule ElasticPool.IntegrationTest do
 
     @impl true
     def init(opts) do
-      %{baseline: opts.pool_config.baseline_workers}
+      %{initial: opts.pool_config.initial_workers}
     end
 
     @impl true
@@ -38,7 +38,7 @@ defmodule ElasticPool.IntegrationTest do
         cond do
           count >= 200 -> 5
           count >= 100 -> 20
-          true -> state.baseline
+          true -> state.initial
         end
 
       {target, state}
@@ -65,7 +65,7 @@ defmodule ElasticPool.IntegrationTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: TrackingWorker,
-        baseline_workers: 2,
+        initial_workers: 2,
         max_workers: 20,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
@@ -137,7 +137,7 @@ defmodule ElasticPool.IntegrationTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: TrackingWorker,
-        baseline_workers: 10,
+        initial_workers: 10,
         max_workers: 10,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
@@ -176,7 +176,7 @@ defmodule ElasticPool.IntegrationTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: TrackingWorker,
-        baseline_workers: 1,
+        initial_workers: 1,
         max_workers: 3,
         scaling_policy: OverTargetPolicy,
         worker_args: [test_pid: test_pid]
@@ -224,7 +224,7 @@ defmodule ElasticPool.IntegrationTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: TrackingCrashingWorker,
-        baseline_workers: 1,
+        initial_workers: 1,
         worker_args: [test_pid: test_pid]
       )
 

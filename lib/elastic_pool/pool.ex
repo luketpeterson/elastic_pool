@@ -41,7 +41,7 @@ defmodule ElasticPool.Pool do
       pool_name: config.name,
       policy_mod: policy_mod,
       policy_state: policy_state,
-      target_count: config.baseline_workers
+      target_count: config.initial_workers
     }
 
     update_ets(state)
