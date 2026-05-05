@@ -83,6 +83,13 @@ defmodule ElasticPool.Worker do
   @impl true
   def handle_info(msg, state) do
     Logger.error("[Worker] Received unexpected message: #{inspect(msg)}")
+
+    :telemetry.execute(
+      [:elastic_pool, :worker, :unknown_message],
+      %{count: 1},
+      %{pool: state.handler, message: msg}
+    )
+
     {:noreply, state}
   end
 

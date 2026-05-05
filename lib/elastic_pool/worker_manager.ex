@@ -9,7 +9,6 @@ defmodule ElasticPool.WorkerManager do
   - Acting as the direct supervisor for all workers by trapping exits.
   """
   use GenServer
-  require Logger
 
   def start_link(config) do
     GenServer.start_link(__MODULE__, config, name: config.manager)
@@ -89,8 +88,10 @@ defmodule ElasticPool.WorkerManager do
         {:noreply, state}
 
       _other ->
-        Logger.error(
-          "[WorkerManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering..."
+        :telemetry.execute(
+          [:elastic_pool, :worker, :crash],
+          %{count: 1},
+          %{pool: state.pool_name, pid: pid, reason: reason}
         )
 
         # Instant Recovery: Reconcile immediately to hit target
@@ -105,8 +106,10 @@ defmodule ElasticPool.WorkerManager do
     needed = target - (active_count + state.pending_count)
 
     if needed > 0 do
-      Logger.info(
-        "[WorkerManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}"
+      :telemetry.execute(
+        [:elastic_pool, :manager, :scale_up],
+        %{count: needed},
+        %{pool: state.pool_name, target: target, active: active_count}
       )
 
       new_workers =
