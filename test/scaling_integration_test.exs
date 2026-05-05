@@ -127,46 +127,47 @@ defmodule ElasticPool.IntegrationTest do
     end
     refute_receive {:worker_terminated, _}, 100
   end
+test "WorkerManager survives scale-down" do
+  name = :manager_survival_test
+  test_pid = self()
 
-  test "ScalingManager survives scale-down" do
-    name = :manager_survival_test
-    test_pid = self()
+  {:ok, _pid} =
+    ElasticPool.start_link(
+      name: name,
+      worker_handler: TrackingWorker,
+      initial_workers: 10,
+      max_workers: 10,
+      scaling_policy: ScheduledPolicy,
+      worker_args: [test_pid: test_pid]
+    )
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: TrackingWorker,
-        initial_workers: 10,
-        scaling_policy: ScheduledPolicy,
-        worker_args: [test_pid: test_pid]
-      )
+  manager_name = Module.concat(name, WorkerManager)
+  manager_pid = Process.whereis(manager_name)
+  assert is_pid(manager_pid)
 
-    manager_name = Module.concat(name, ScalingManager)
-    manager_pid = Process.whereis(manager_name)
-    assert is_pid(manager_pid)
+  # Monitor the manager
+  ref = Process.monitor(manager_pid)
 
-    # Monitor the manager
-    ref = Process.monitor(manager_pid)
-
-    # Trigger Scale-Down: Send 200 requests to hit the 5 worker target
-    for _ <- 1..200 do
-      ElasticPool.call(name, :ping)
-    end
-
-    # Wait for target and idle
-    wait_for_target(name, 5)
-    wait_for_idle(name)
-
-    # If the manager crashed, we would receive a :DOWN message
-    refute_receive {:DOWN, ^ref, :process, ^manager_pid, _reason}, 1000,
-      "ScalingManager crashed during scale-down! This would mean our merged supervisor/manager is unstable."
-
-    assert ElasticPool.active_workers(name) == 5
-
-    Supervisor.stop(name)
+  # Trigger Scale-Down: Send 200 requests to hit the 5 worker target
+  for _ <- 1..200 do
+    ElasticPool.call(name, :ping)
   end
 
-  test "ScalingManager enforces max_workers as a hard cap" do
+  # Wait for target and idle
+  wait_for_target(name, 5)
+  wait_for_idle(name)
+
+  # If the manager crashed, we would receive a :DOWN message
+  refute_receive {:DOWN, ^ref, :process, ^manager_pid, _reason}, 1000,
+    "WorkerManager crashed during scale-down! This would mean our merged supervisor/manager is unstable."
+
+  assert ElasticPool.active_workers(name) == 5
+
+  Supervisor.stop(name)
+end
+
+test "WorkerManager enforces max_workers as a hard cap" do
+
     name = :max_worker_cap_test
     test_pid = self()
 
@@ -235,7 +236,7 @@ defmodule ElasticPool.IntegrationTest do
     spawn(fn -> ElasticPool.call(name, :crash) end)
 
     # 3. Prove Instant Recovery via message passing
-    # The ScalingManager should start a new one immediately.
+    # The WorkerManager should start a new one immediately.
     assert_receive {:worker_init, second_pid}, 1000
     assert second_pid != first_pid
 

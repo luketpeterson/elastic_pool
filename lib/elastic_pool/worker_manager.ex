@@ -1,7 +1,12 @@
-defmodule ElasticPool.ScalingManager do
+defmodule ElasticPool.WorkerManager do
   @moduledoc """
-  The brain of the pool. Manages the worker lifecycle and scaling decisions.
-  Acts as the direct supervisor for all workers by trapping exits.
+  The supervisor and lifecycle manager for all worker processes in the pool.
+
+  WorkerManager is responsible for:
+  - Starting new worker processes to meet scaling targets.
+  - Stopping worker processes when requested by the Pool.
+  - Monitoring workers and performing instant recovery if they crash.
+  - Acting as the direct supervisor for all workers by trapping exits.
   """
   use GenServer
   require Logger
@@ -83,21 +88,20 @@ defmodule ElasticPool.ScalingManager do
         {:noreply, state}
 
       _other ->
-        Logger.error("[ScalingManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering...")
+        Logger.error("[WorkerManager] Worker #{inspect(pid)} crashed: #{inspect(reason)}. Recovering...")
         # Instant Recovery: Reconcile immediately to hit target
         {:noreply, reconcile(state.target, state)}
-    end
-  end
+        end
+        end
 
-  # --- Private ---
+        # --- Private ---
 
-  defp reconcile(target, state) do
-    active_count = MapSet.size(state.workers)
-    needed = target - (active_count + state.pending_count)
+        defp reconcile(target, state) do
+        active_count = MapSet.size(state.workers)
+        needed = target - (active_count + state.pending_count)
 
-    if needed > 0 do
-      Logger.info("[ScalingManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}")
-
+        if needed > 0 do
+        Logger.info("[WorkerManager] Scaling up: target=#{target}, active=#{active_count}, starting=#{needed}")
       new_workers = Enum.reduce(1..needed, state.workers, fn _, acc ->
         case start_worker(state.config) do
           {:ok, pid} -> MapSet.put(acc, pid)

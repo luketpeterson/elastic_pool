@@ -98,7 +98,7 @@ defmodule ElasticPool.Pool do
       # Drain: We are over target, so don't put this worker back in rotation.
       # Dismiss it locally and tell the manager to stop it.
       new_state = dismiss_worker_locally(pid, state)
-      ElasticPool.ScalingManager.stop_worker(state.manager, pid)
+      ElasticPool.WorkerManager.stop_worker(state.manager, pid)
       new_state
     else
       # Normal Checkin logic
@@ -150,7 +150,7 @@ defmodule ElasticPool.Pool do
     state = %{state | policy_state: new_policy_state}
 
     if target != state.target_count do
-      ElasticPool.ScalingManager.set_target(state.manager, target)
+      ElasticPool.WorkerManager.set_target(state.manager, target)
       # Update the intent (target) stat immediately
       :ets.insert(state.stats_table, {:target_workers, target})
 
@@ -167,7 +167,7 @@ defmodule ElasticPool.Pool do
         # Dismiss them locally and notify Manager
         Enum.reduce(to_dismiss, %{state | target_count: target}, fn pid, acc ->
           acc = dismiss_worker_locally(pid, acc)
-          ElasticPool.ScalingManager.stop_worker(state.manager, pid)
+          ElasticPool.WorkerManager.stop_worker(state.manager, pid)
           acc
         end)
       else

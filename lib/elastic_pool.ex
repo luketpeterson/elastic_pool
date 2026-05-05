@@ -61,7 +61,7 @@ defmodule ElasticPool do
     worker_args = opts[:worker_args] || []
 
     pool_proc = Module.concat(name, Pool)
-    manager_proc = Module.concat(name, ScalingManager)
+    manager_proc = Module.concat(name, WorkerManager)
     stats_table = Module.concat(name, Stats)
 
     if :ets.whereis(stats_table) == :undefined do
@@ -96,7 +96,7 @@ defmodule ElasticPool do
 
     children = [
       {ElasticPool.Pool, config},
-      {ElasticPool.ScalingManager, config}
+      {ElasticPool.WorkerManager, config}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

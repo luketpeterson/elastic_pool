@@ -58,7 +58,7 @@ defmodule ElasticPool.Worker do
     handler_state = if function_exported?(handler, :init, 1), do: handler.init(args), else: args
 
     # Notify that this worker is ready to take work
-    ElasticPool.ScalingManager.worker_ready(manager)
+    ElasticPool.WorkerManager.worker_ready(manager)
     ElasticPool.Pool.worker_ready(pool, self())
 
     {:noreply, %{handler: handler, handler_state: handler_state}}
