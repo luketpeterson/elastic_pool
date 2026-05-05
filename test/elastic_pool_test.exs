@@ -6,6 +6,7 @@ end
 
 defmodule ElasticPoolTest.SlowInitWorker do
   use ElasticPool.Worker
+
   @impl true
   def init(args) do
     Process.sleep(250)
@@ -18,8 +19,10 @@ end
 
 defmodule ElasticPoolTest.TerminationWorker do
   use ElasticPool.Worker
+
   @impl true
   def handle_work(_, _, state), do: {:reply, :ok, state}
+
   @impl true
   def terminate(_reason, state) do
     send(state[:test_pid], :worker_terminated)
@@ -133,6 +136,37 @@ defmodule ElasticPoolTest do
     # Cleanup
     :telemetry.detach(handler_id)
     Supervisor.stop(name)
+  end
+
+  defmodule FastCrashingWorker do
+    use ElasticPool.Worker
+    @impl true
+    def init(_), do: raise("Instant Crash")
+
+    @impl true
+    def handle_work(_req, _from, state), do: {:reply, :ok, state}
+  end
+
+  @tag :capture_log
+  test "pool shuts down when crash intensity is reached" do
+    name = :intensity_test
+
+    # This should crash immediately on start because initial_workers=1
+    # but it will keep trying to reconcile until max_restarts (2) is hit.
+    result =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: FastCrashingWorker,
+        initial_workers: 1,
+        max_restarts: 2,
+        max_period: 5,
+        start_timeout: 500
+      )
+
+    assert {:error, :timeout} = result
+    # Ensure the process is actually gone
+    Process.sleep(100)
+    assert Process.whereis(name) == nil
   end
 
   def handle_telemetry(_name, measurements, metadata, test_pid) do

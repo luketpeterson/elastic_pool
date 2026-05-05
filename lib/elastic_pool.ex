@@ -23,6 +23,9 @@ defmodule ElasticPool do
   - `:scaling_policy_opts` - options passed to the scaling policy
   - `:start_timeout` - time in ms to wait for initial workers to come up, defaults
     to `5000`
+  - `:max_restarts` - maximum number of worker crashes allowed in `:max_period`,
+    defaults to `3`
+  - `:max_period` - time window for `:max_restarts` in seconds, defaults to `5`
   """
   def start_link(opts) do
     name = opts[:name] || __MODULE__
@@ -92,6 +95,8 @@ defmodule ElasticPool do
       stats_table: stats_table,
       max_workers: Keyword.get(opts, :max_workers, :infinity),
       initial_workers: opts[:initial_workers] || 2,
+      max_restarts: opts[:max_restarts] || 3,
+      max_period: opts[:max_period] || 5,
 
       # Scaling Policy Configuration
       scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,
@@ -107,7 +112,7 @@ defmodule ElasticPool do
       {ElasticPool.WorkerManager, config}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :one_for_all)
   end
 
   # --- High Performance Accessors ---

@@ -42,7 +42,8 @@ defmodule ElasticPool.WorkerManager do
       pool_name: config.name,
       target: target,
       workers: MapSet.new(),
-      pending_count: 0
+      pending_count: 0,
+      restarts: []
     }
 
     # Initial scale-up to baseline
@@ -88,12 +89,32 @@ defmodule ElasticPool.WorkerManager do
         {:noreply, state}
 
       _other ->
-        # Instant Recovery: Reconcile immediately to hit target
-        {:noreply, reconcile(state.target, state, :recovery)}
+        case check_intensity(state) do
+          {:ok, new_state} ->
+            # Instant Recovery: Reconcile immediately to hit target
+            {:noreply, reconcile(state.target, new_state, :recovery)}
+
+          {:error, :too_many_crashes} ->
+            {:stop, {:shutdown, :reached_max_restart_intensity}, state}
+        end
     end
   end
 
   # --- Private ---
+
+  defp check_intensity(state) do
+    now = System.monotonic_time(:second)
+    cutoff = now - state.config.max_period
+
+    # Filter out old restarts
+    recent_restarts = [now | Enum.filter(state.restarts, &(&1 > cutoff))]
+
+    if length(recent_restarts) > state.config.max_restarts do
+      {:error, :too_many_crashes}
+    else
+      {:ok, %{state | restarts: recent_restarts}}
+    end
+  end
 
   defp reconcile(target, state, reason \\ nil) do
     active_count = MapSet.size(state.workers)
