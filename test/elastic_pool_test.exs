@@ -57,8 +57,7 @@ defmodule ElasticPoolTest do
     {:ok, _pid} = ElasticPool.start_link(
       name: name,
       worker_handler: ElasticPoolTest.SlowInitWorker,
-      initial_workers: 10,
-      max_workers: 10
+      initial_workers: 10
     )
 
     end_time = System.monotonic_time(:millisecond)

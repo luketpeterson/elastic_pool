@@ -66,7 +66,6 @@ defmodule ElasticPool.IntegrationTest do
         name: name,
         worker_handler: TrackingWorker,
         initial_workers: 2,
-        max_workers: 20,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
       )
@@ -138,7 +137,6 @@ defmodule ElasticPool.IntegrationTest do
         name: name,
         worker_handler: TrackingWorker,
         initial_workers: 10,
-        max_workers: 10,
         scaling_policy: ScheduledPolicy,
         worker_args: [test_pid: test_pid]
       )
