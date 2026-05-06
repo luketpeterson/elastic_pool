@@ -10,33 +10,46 @@ defmodule ElasticPool.StatsPoller do
 
   @impl true
   def init(opts) do
-    pool = Keyword.fetch!(opts, :pool)
+    config = Keyword.fetch!(opts, :config)
     interval = opts[:interval] || 5000
 
     # Schedule first tick
     schedule_poll(interval)
 
-    {:ok, %{pool: pool, interval: interval}}
+    {:ok, %{config: config, interval: interval}}
+  end
+
+  defmacro get_stat_safe(table, key) do
+    quote do
+      try do
+        :ets.lookup_element(unquote(table), unquote(key), 2)
+      rescue
+        ArgumentError -> 0
+      end
+    end
   end
 
   @impl true
   def handle_info(:poll, state) do
+    stats_table = state.config.stats_table
+    pool_name = state.config.name
+
     # Read absolute state using high-performance accessors
-    active = ElasticPool.active_workers(state.pool)
-    available = ElasticPool.available_workers(state.pool)
+    active = get_stat_safe(stats_table, :active_workers)
+    available = get_stat_safe(stats_table, :available_workers)
 
     measurements = %{
-      target_workers: ElasticPool.target_workers(state.pool),
+      target_workers: get_stat_safe(stats_table, :target_workers),
       active_workers: active,
       available_workers: available,
       busy_workers: active - available,
-      peak_workers: ElasticPool.peak_workers(state.pool),
-      waiting_clients: ElasticPool.waiting_clients(state.pool),
-      request_count: ElasticPool.request_count(state.pool)
+      peak_workers: get_stat_safe(stats_table, :peak_workers),
+      waiting_clients: get_stat_safe(stats_table, :waiting_clients),
+      request_count: get_stat_safe(stats_table, :request_count)
     }
 
     # Emit the heartbeat
-    :telemetry.execute([:elastic_pool, :pool, :status], measurements, %{pool_name: state.pool})
+    :telemetry.execute([:elastic_pool, :pool, :status], measurements, %{pool_name: pool_name})
 
     schedule_poll(state.interval)
     {:noreply, state}

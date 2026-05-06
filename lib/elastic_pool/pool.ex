@@ -2,6 +2,7 @@ defmodule ElasticPool.Pool do
   @moduledoc false
   use GenServer
   require Logger
+  require ElasticPool
 
   def start_link(config) do
     GenServer.start_link(__MODULE__, config, name: config.pool)
@@ -42,6 +43,7 @@ defmodule ElasticPool.Pool do
       # PID/Name of the WorkerManager used for physical worker lifecycle tasks
       manager: config.manager,
       # Named ETS table used to publish real-time stats to external callers
+      # In the shared-atom design, this is the same as the pool name.
       stats_table: config.stats_table,
       # Atom name of the pool instance for telemetry and policy identification
       pool_name: config.name,
@@ -152,9 +154,9 @@ defmodule ElasticPool.Pool do
       Process.demonitor(ref)
     end
 
-    new_monitors = Map.delete(state.monitors, pid)
+    new_monitors_map = Map.delete(state.monitors, pid)
     new_available = Enum.reject(state.available, &(&1 == pid))
-    new_state = %{state | monitors: new_monitors, available: new_available}
+    new_state = %{state | monitors: new_monitors_map, available: new_available}
     update_ets(new_state)
     new_state
   end

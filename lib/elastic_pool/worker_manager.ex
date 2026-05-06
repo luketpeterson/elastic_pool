@@ -11,6 +11,7 @@ defmodule ElasticPool.WorkerManager do
 
   use GenServer
   require Logger
+  require ElasticPool
 
   def start_link(config) do
     GenServer.start_link(__MODULE__, config, name: config.manager)
@@ -20,8 +21,8 @@ defmodule ElasticPool.WorkerManager do
     GenServer.cast(manager, {:set_target, target})
   end
 
-  def wait_for_ready(manager, count, timeout) do
-    GenServer.call(manager, {:wait_for_ready, count}, timeout)
+  def wait_for_ready(manager, stats_table, count, timeout) do
+    GenServer.call(manager, {:wait_for_ready, stats_table, count}, timeout)
   end
 
   def worker_ready(manager, pid) do
@@ -71,8 +72,8 @@ defmodule ElasticPool.WorkerManager do
   end
 
   @impl true
-  def handle_call({:wait_for_ready, count}, from, state) do
-    current_count = ElasticPool.active_workers(state.pool_name)
+  def handle_call({:wait_for_ready, stats_table, count}, from, state) do
+    current_count = ElasticPool.active_workers(stats_table)
 
     if current_count >= count do
       {:reply, :ok, state}
@@ -104,9 +105,11 @@ defmodule ElasticPool.WorkerManager do
   @impl true
   def handle_cast({:worker_ready, pid}, state) do
     # 1. Register the worker with the Pool synchronously
+    # This ensures the worker is in the 'available' list and reflected in ETS
+    # before we notify any waiters.
     case ElasticPool.Pool.add_worker(state.config.pool, pid) do
       :ok ->
-        current_count = ElasticPool.active_workers(state.pool_name)
+        current_count = ElasticPool.active_workers(state.config.stats_table)
 
         # 2. Check if we can satisfy any clients waiting for pool readiness
         remaining_waiting =

@@ -21,29 +21,29 @@ defmodule ElasticPool.IntegrationTest do
       :ok
     end
   end
+defmodule ScheduledPolicy do
+  @behaviour ElasticPool.ScalingPolicy
+  require ElasticPool
 
-  defmodule ScheduledPolicy do
-    @behaviour ElasticPool.ScalingPolicy
-
-    @impl true
-    def init(opts) do
-      %{initial: opts.pool_config.initial_workers}
-    end
-
-    @impl true
-    def handle_event(_event, pool, state) do
-      count = ElasticPool.request_count(pool)
-
-      target =
-        cond do
-          count >= 200 -> 5
-          count >= 100 -> 20
-          true -> state.initial
-        end
-
-      {target, state}
-    end
+  @impl true
+  def init(opts) do
+    %{initial: opts.pool_config.initial_workers}
   end
+
+  @impl true
+  def handle_event(_event, pool, state) do
+    count = ElasticPool.request_count(pool)
+
+    target =
+      cond do
+        count >= 200 -> 5
+        count >= 100 -> 20
+        true -> state.initial
+      end
+
+    {target, state}
+  end
+end
 
   defmodule OverTargetPolicy do
     @behaviour ElasticPool.ScalingPolicy
@@ -274,7 +274,7 @@ defmodule ElasticPool.IntegrationTest do
     assert second_pid != first_pid
 
     # NEW: Deterministic Sync Barrier.
-    :sys.get_state(Module.concat(name, Pool))
+    :sys.get_state(name)
 
     # 4. Verify the new worker is functional and stats are correct
     assert CrashRecoveryPool.active_workers() == 1

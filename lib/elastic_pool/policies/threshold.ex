@@ -11,6 +11,7 @@ defmodule ElasticPool.Policies.Threshold do
   over-shoot and bring up more workers than needed because of the backlog.
   """
   @behaviour ElasticPool.ScalingPolicy
+  require ElasticPool
 
   @impl true
   def init(%{policy_opts: opts, pool_config: _pool}) do

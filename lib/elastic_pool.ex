@@ -17,7 +17,8 @@ defmodule ElasticPool do
     started, regardless of scaling policy. Defaults to `:infinity`.
     Use `max_workers` when each worker represents a specific and finite
     resource that should not be over-committed, such as a physical CPU core,
-    a fixed-size license pool, or some other hard capacity limit.
+    a fixed-size license pool, or some other hard capacity limit that should
+    never be exceeded.
   - `:scaling_policy` - Scaling policy module. Defaults to
     `ElasticPool.Policies.Threshold`.
   - `:scaling_policy_opts` - Options passed to the scaling policy.
@@ -62,6 +63,9 @@ defmodule ElasticPool do
       # Perform compile-time validation of the provided modules.
       ElasticPool.validate_config!(__MODULE__, opts)
 
+      # Default instance handle (compile-time constant)
+      @default_name __MODULE__
+
       @doc """
       Starts the pool supervisor.
 
@@ -74,12 +78,16 @@ defmodule ElasticPool do
         initial = full_opts[:initial_workers] || 2
         timeout = full_opts[:start_timeout] || 5000
 
-        case Supervisor.start_link(__MODULE__, full_opts, name: name) do
-          {:ok, pid} ->
-            manager_proc = Module.concat(name, WorkerManager)
+        # We need the sub-process names to match the ones that are going to be set in `init_pool`
+        manager_handle = Module.concat(name, WorkerManager)
+        stats_handle = name
 
+        # We start the supervisor unnamed to allow the Pool GenServer to take
+        # the provided 'name' atom.
+        case Supervisor.start_link(__MODULE__, full_opts) do
+          {:ok, pid} ->
             try do
-              case ElasticPool.WorkerManager.wait_for_ready(manager_proc, initial, timeout) do
+              case ElasticPool.WorkerManager.wait_for_ready(manager_handle, stats_handle, initial, timeout) do
                 :ok ->
                   {:ok, pid}
 
@@ -103,51 +111,51 @@ defmodule ElasticPool do
       end
 
       @doc """
-      Performs a synchronous call to a worker in this pool.
+      Performs a synchronous call to a worker in the default pool.
       Defaults to the instance named after the module.
       """
       def call(request, timeout \\ 30_000) do
-        ElasticPool.call(__MODULE__, request, timeout)
+        ElasticPool.execute_call(@default_name, request, timeout)
       end
 
       @doc """
-      Performs a synchronous call to a specific named instance of this pool.
+      Performs a synchronous call to a specific named instance of the pool.
       """
       def call(name, request, timeout) do
-        ElasticPool.call(name, request, timeout)
+        ElasticPool.execute_call(name, request, timeout)
       end
 
       @doc """
       Returns the 'Target' number of workers the pool intends to have.
       Identity: `starting_workers = target_workers - active_workers` (may be negative if the pool is about to scale down).
       """
-      def target_workers(name \\ __MODULE__), do: ElasticPool.target_workers(name)
+      def target_workers(name \\ @default_name), do: ElasticPool.target_workers(name)
 
       @doc """
       Returns the number of workers that are currently alive and monitored by the pool.
       """
-      def active_workers(name \\ __MODULE__), do: ElasticPool.active_workers(name)
+      def active_workers(name \\ @default_name), do: ElasticPool.active_workers(name)
 
       @doc """
       Returns the number of workers that are currently idle and ready to take work.
       Identity: `busy_workers = active_workers - available_workers`
       """
-      def available_workers(name \\ __MODULE__), do: ElasticPool.available_workers(name)
+      def available_workers(name \\ @default_name), do: ElasticPool.available_workers(name)
 
       @doc """
       Returns the highest number of concurrent active workers that have existed since the pool started.
       """
-      def peak_workers(name \\ __MODULE__), do: ElasticPool.peak_workers(name)
+      def peak_workers(name \\ @default_name), do: ElasticPool.peak_workers(name)
 
       @doc """
       Returns the number of clients currently waiting in the checkout queue.
       """
-      def waiting_clients(name \\ __MODULE__), do: ElasticPool.waiting_clients(name)
+      def waiting_clients(name \\ @default_name), do: ElasticPool.waiting_clients(name)
 
       @doc """
       Returns the cumulative number of checkout requests made to the pool since it started.
       """
-      def request_count(name \\ __MODULE__), do: ElasticPool.request_count(name)
+      def request_count(name \\ @default_name), do: ElasticPool.request_count(name)
 
       def child_spec(opts) do
         %{
@@ -159,6 +167,67 @@ defmodule ElasticPool do
     end
   end
 
+  # --- High Performance Public Accessor Macros ---
+
+  @doc """
+  Returns the 'Target' number of workers the pool intends to have.
+  Fails if the pool is not running.
+  """
+  defmacro target_workers(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :target_workers, 2)
+  end
+
+  @doc """
+  Returns the number of workers that are currently alive and monitored by the pool.
+  Fails if the pool is not running.
+  """
+  defmacro active_workers(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :active_workers, 2)
+  end
+
+  @doc """
+  Returns the number of workers that are currently idle and ready to take work.
+  Fails if the pool is not running.
+  """
+  defmacro available_workers(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :available_workers, 2)
+  end
+
+  @doc """
+  Returns the highest number of concurrent active workers that have existed since the pool started.
+  Fails if the pool is not running.
+  """
+  defmacro peak_workers(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :peak_workers, 2)
+  end
+
+  @doc """
+  Returns the number of clients currently waiting in the checkout queue.
+  Fails if the pool is not running.
+  """
+  defmacro waiting_clients(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :waiting_clients, 2)
+  end
+
+  @doc """
+  Returns the cumulative number of checkout requests made to the pool since it started.
+  Fails if the pool is not running.
+  """
+  defmacro request_count(pool) do
+    quote do: :ets.lookup_element(unquote(pool), :request_count, 2)
+  end
+
+  @doc false
+  defmacro get_stat_safe(table, key) do
+    quote do
+      try do
+        :ets.lookup_element(unquote(table), unquote(key), 2)
+      rescue
+        ArgumentError -> 0
+      end
+    end
+  end
+
   # --- Internal Helpers ---
 
   @doc false
@@ -166,6 +235,7 @@ defmodule ElasticPool do
     worker = opts[:worker_handler] || raise "Missing :worker_handler in #{module}"
     policy = opts[:scaling_policy] || ElasticPool.Policies.Threshold
 
+    # Check for presence and behavior at compile time if possible
     cond do
       !Code.ensure_loaded?(worker) ->
         raise ArgumentError, "Worker module #{inspect(worker)} could not be loaded in #{module}"
@@ -183,9 +253,12 @@ defmodule ElasticPool do
     worker_handler = Keyword.fetch!(opts, :worker_handler)
     worker_args = opts[:worker_args] || []
 
-    pool_proc = Module.concat(name, Pool)
-    manager_proc = Module.concat(name, WorkerManager)
-    stats_table = Module.concat(name, Stats)
+    # ZERO-CONCAT DESIGN:
+    # Handles are computed once at initialization and stored in process state.
+    # Stats table shares the 'name' atom.
+    # Manager process is named once using Module.concat.
+    stats_table = name
+    manager_handle = Module.concat(name, WorkerManager)
 
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
@@ -200,17 +273,22 @@ defmodule ElasticPool do
       {:request_count, 0}
     ])
 
+    # Group the configuration
     config = %{
       name: name,
-      pool: pool_proc,
-      manager: manager_proc,
+      pool: name, # Pool process uses the name directly
+      manager: manager_handle, # Stored atom handle
       stats_table: stats_table,
       max_workers: Keyword.get(opts, :max_workers, :infinity),
       initial_workers: opts[:initial_workers] || 2,
       max_restarts: opts[:max_restarts] || 3,
       max_period: opts[:max_period] || 5,
+
+      # Scaling Policy Configuration
       scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,
       scaling_policy_opts: opts[:scaling_policy_opts] || [],
+
+      # Worker Configuration
       worker_handler: worker_handler,
       worker_args: worker_args
     }
@@ -226,18 +304,14 @@ defmodule ElasticPool do
       if stats_interval == :never do
         children
       else
-        children ++ [{ElasticPool.StatsPoller, pool: name, interval: stats_interval}]
+        children ++ [{ElasticPool.StatsPoller, config: config, interval: stats_interval}]
       end
 
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 0)
   end
 
-  @doc """
-  Performs a synchronous call to a worker in a named pool.
-  """
-  def call(pool_name, request, timeout \\ 30_000) do
-    pool_proc = Module.concat(pool_name, Pool)
-
+  @doc false
+  def execute_call(pool_proc, request, timeout) do
     case ElasticPool.Pool.checkout(pool_proc, timeout) do
       {:ok, _ref, worker_pid} ->
         try do
@@ -249,51 +323,5 @@ defmodule ElasticPool do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  # --- High Performance Accessors ---
-
-  @doc """
-  Returns the 'Target' number of workers the pool intends to have.
-  Identity: `starting_workers = target_workers - active_workers` (may be negative if the pool is about to scale down).
-  """
-  def target_workers(name), do: get_stat(name, :target_workers)
-
-  @doc """
-  Returns the number of workers that are currently alive and monitored by the pool.
-  """
-  def active_workers(name), do: get_stat(name, :active_workers)
-
-  @doc """
-  Returns the number of workers that are currently idle and ready to take work.
-  Identity: `busy_workers = active_workers - available_workers`
-  """
-  def available_workers(name), do: get_stat(name, :available_workers)
-
-  @doc """
-  Returns the highest number of concurrent active workers that have existed since the pool started.
-  """
-  def peak_workers(name), do: get_stat(name, :peak_workers)
-
-  @doc """
-  Returns the number of clients currently waiting in the checkout queue.
-  """
-  def waiting_clients(name), do: get_stat(name, :waiting_clients)
-
-  @doc """
-  Returns the cumulative number of checkout requests made to the pool since it started.
-  """
-  def request_count(name), do: get_stat(name, :request_count)
-
-  @doc false
-  def get_stat_from_table(table, key) do
-    :ets.lookup_element(table, key, 2)
-  rescue
-    ArgumentError -> 0
-  end
-
-  defp get_stat(name, key) do
-    stats_table = Module.concat(name, Stats)
-    get_stat_from_table(stats_table, key)
   end
 end
