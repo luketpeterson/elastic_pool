@@ -165,7 +165,7 @@ defmodule ElasticPoolTest do
 
     # During init failure, start_link returns the error reason
     assert {:error, :supervisor_died} = result
-    Process.sleep(50)
+    assert_receive {:EXIT, _pid, :shutdown}
     assert Process.whereis(name) == nil
   end
 

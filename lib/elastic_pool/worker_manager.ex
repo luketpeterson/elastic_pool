@@ -50,8 +50,6 @@ defmodule ElasticPool.WorkerManager do
       target: target,
       # Set of all physical worker PIDs currently linked to this manager
       workers: MapSet.new(),
-      # Set of worker PIDs that have successfully registered with the Pool
-      ready_workers: MapSet.new(),
       # List of monotonic timestamps of recent worker crashes for intensity tracking
       restarts: [],
       # List of {from, target_count} clients waiting for initial boot-up
@@ -70,7 +68,7 @@ defmodule ElasticPool.WorkerManager do
 
   @impl true
   def handle_call({:wait_for_ready, count}, from, state) do
-    if MapSet.size(state.ready_workers) >= count do
+    if ElasticPool.active_workers(state.pool_name) >= count do
       {:reply, :ok, state}
     else
       {:noreply, %{state | waiting_readiness: [{from, count} | state.waiting_readiness]}}
@@ -96,16 +94,16 @@ defmodule ElasticPool.WorkerManager do
   @impl true
   def handle_cast({:worker_ready, pid}, state) do
     # 1. Register the worker with the Pool synchronously
-    # This ensures the worker is in the 'available' list before we notify any waiters.
+    # This ensures the worker is in the 'available' list and reflected in ETS
+    # before we notify any waiters.
     case ElasticPool.Pool.add_worker(state.config.pool, pid) do
       :ok ->
-        new_ready = MapSet.put(state.ready_workers, pid)
-        new_state = %{state | ready_workers: new_ready}
+        current_count = ElasticPool.active_workers(state.pool_name)
 
         # 2. Check if we can satisfy any clients waiting for pool readiness
         remaining_waiting =
-          Enum.reduce(new_state.waiting_readiness, [], fn {from, count}, acc ->
-            if MapSet.size(new_ready) >= count do
+          Enum.reduce(state.waiting_readiness, [], fn {from, count}, acc ->
+            if current_count >= count do
               GenServer.reply(from, :ok)
               acc
             else
@@ -113,7 +111,7 @@ defmodule ElasticPool.WorkerManager do
             end
           end)
 
-        {:noreply, %{new_state | waiting_readiness: remaining_waiting}}
+        {:noreply, %{state | waiting_readiness: remaining_waiting}}
 
       :error ->
         # Worker died during handover
@@ -124,8 +122,7 @@ defmodule ElasticPool.WorkerManager do
   @impl true
   def handle_info({:EXIT, pid, reason}, state) do
     new_workers = MapSet.delete(state.workers, pid)
-    new_ready = MapSet.delete(state.ready_workers, pid)
-    state = %{state | workers: new_workers, ready_workers: new_ready}
+    state = %{state | workers: new_workers}
 
     case reason do
       :normal ->
