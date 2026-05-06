@@ -1,8 +1,5 @@
 defmodule ElasticPool.Pool do
-  @moduledoc """
-  A queue-based pool for workers that takes worker resource cost and startup latency
-  into account
-  """
+  @moduledoc false
   use GenServer
   require Logger
 
@@ -14,12 +11,12 @@ defmodule ElasticPool.Pool do
     GenServer.call(pool, :checkout, timeout)
   end
 
-  def checkin(pool, worker_pid) do
-    GenServer.cast(pool, {:checkin, worker_pid})
+  def add_worker(pool, worker_pid) do
+    GenServer.call(pool, {:add_worker, worker_pid})
   end
 
-  def worker_ready(pool, worker_pid) do
-    GenServer.cast(pool, {:worker_ready, worker_pid})
+  def checkin(pool, worker_pid) do
+    GenServer.cast(pool, {:checkin, worker_pid})
   end
 
   # --- Callbacks ---
@@ -34,16 +31,25 @@ defmodule ElasticPool.Pool do
       })
 
     state = %{
+      # Idle worker inventory available for checkout
       available: [],
+      # FIFO queue for clients when the pool is at capacity
       waiting: :queue.new(),
-      # pid -> ref
+      # Map of {pid => monitor_ref} tracking all active/monitored workers
       monitors: %{},
+      # High-water mark of concurrent active workers for observability
       peak_workers: 0,
+      # PID/Name of the WorkerManager used for physical worker lifecycle tasks
       manager: config.manager,
+      # Named ETS table used to publish real-time stats to external callers
       stats_table: config.stats_table,
+      # Atom name of the pool instance for telemetry and policy identification
       pool_name: config.name,
+      # Pluggable scaling logic module
       policy_mod: policy_mod,
+      # Internal state maintained by the scaling policy module
       policy_state: policy_state,
+      # Cached scaling target to avoid redundant logic/lookups in hot paths
       target_count: config.initial_workers
     }
 
@@ -73,13 +79,38 @@ defmodule ElasticPool.Pool do
   end
 
   @impl true
-  def handle_cast({:checkin, pid}, state) do
-    {:noreply, do_checkin(pid, :checkin, state)}
+  def handle_call({:add_worker, pid}, _from, state) do
+    # New worker registration from WorkerManager
+    state = evaluate_policy(:worker_ready, state)
+
+    if Process.alive?(pid) do
+      state = ensure_monitored(state, pid)
+      new_active_count = map_size(state.monitors)
+      state = %{state | peak_workers: max(state.peak_workers, new_active_count)}
+
+      if state.target_count < new_active_count do
+        {:reply, :ok, dismiss_worker(pid, state)}
+      else
+        {:reply, :ok, put_worker_in_rotation(pid, state)}
+      end
+    else
+      new_state = handle_down(state, pid)
+      update_ets(new_state)
+      {:reply, :error, new_state}
+    end
   end
 
   @impl true
-  def handle_cast({:worker_ready, pid}, state) do
-    {:noreply, do_checkin(pid, :worker_ready, state)}
+  def handle_cast({:checkin, pid}, state) do
+    # High-throughput path: Worker returning from job
+    state = evaluate_policy(:checkin, state)
+
+    if state.target_count < map_size(state.monitors) do
+      # Drain: We are over target
+      {:noreply, dismiss_worker(pid, state)}
+    else
+      {:noreply, put_worker_in_rotation(pid, state)}
+    end
   end
 
   @impl true
@@ -91,47 +122,29 @@ defmodule ElasticPool.Pool do
 
   # --- Private ---
 
-  defp do_checkin(pid, event, state) do
-    # Evaluate policy to get latest target
-    state = evaluate_policy(event, state)
-
-    active_count = map_size(state.monitors)
-
-    if state.target_count < active_count do
-      # Drain: We are over target, so don't put this worker back in rotation.
-      # Dismiss it locally and tell the manager to stop it.
-      new_state = dismiss_worker_locally(pid, state)
-      ElasticPool.WorkerManager.stop_worker(state.manager, pid)
-      new_state
-    else
-      # Normal Checkin logic
-      if Process.alive?(pid) do
-        state = ensure_monitored(state, pid)
-        new_peak = max(state.peak_workers, map_size(state.monitors))
-        state = %{state | peak_workers: new_peak}
-
-        case :queue.out(state.waiting) do
-          {{:value, from}, rest} ->
-            GenServer.reply(from, {:ok, nil, pid})
-            new_state = %{state | waiting: rest}
-            update_ets(new_state)
-            new_state
-
-          {:empty, _} ->
-            if pid in state.available do
-              state
-            else
-              new_state = %{state | available: [pid | state.available]}
-              update_ets(new_state)
-              new_state
-            end
-        end
-      else
-        new_state = handle_down(state, pid)
+  defp put_worker_in_rotation(pid, state) do
+    case :queue.out(state.waiting) do
+      {{:value, from}, rest} ->
+        GenServer.reply(from, {:ok, nil, pid})
+        new_state = %{state | waiting: rest}
         update_ets(new_state)
         new_state
-      end
+
+      {:empty, _} ->
+        if pid in state.available do
+          state
+        else
+          new_state = %{state | available: [pid | state.available]}
+          update_ets(new_state)
+          new_state
+        end
     end
+  end
+
+  defp dismiss_worker(pid, state) do
+    new_state = dismiss_worker_locally(pid, state)
+    ElasticPool.WorkerManager.stop_worker(state.manager, pid)
+    new_state
   end
 
   defp dismiss_worker_locally(pid, state) do

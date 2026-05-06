@@ -18,6 +18,10 @@ defmodule ElasticPool.WorkerManager do
     GenServer.cast(manager, {:set_target, target})
   end
 
+  def wait_for_ready(manager, count, timeout) do
+    GenServer.call(manager, {:wait_for_ready, count}, timeout)
+  end
+
   def worker_ready(manager, pid) do
     GenServer.cast(manager, {:worker_ready, pid})
   end
@@ -38,12 +42,20 @@ defmodule ElasticPool.WorkerManager do
     target = min(config.initial_workers, config.max_workers)
 
     state = %{
+      # The full pool configuration (max_workers, handler, etc.)
       config: config,
+      # Atom name of the pool for identification in logs and telemetry
       pool_name: config.name,
+      # Current capacity target requested by the Scaling Policy
       target: target,
+      # Set of all physical worker PIDs currently linked to this manager
       workers: MapSet.new(),
+      # Set of worker PIDs that have successfully registered with the Pool
       ready_workers: MapSet.new(),
-      restarts: []
+      # List of monotonic timestamps of recent worker crashes for intensity tracking
+      restarts: [],
+      # List of {from, target_count} clients waiting for initial boot-up
+      waiting_readiness: []
     }
 
     # Initial scale-up to baseline
@@ -54,6 +66,15 @@ defmodule ElasticPool.WorkerManager do
   def handle_continue(:init_workers, state) do
     new_state = reconcile(state.target, state)
     {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_call({:wait_for_ready, count}, from, state) do
+    if MapSet.size(state.ready_workers) >= count do
+      {:reply, :ok, state}
+    else
+      {:noreply, %{state | waiting_readiness: [{from, count} | state.waiting_readiness]}}
+    end
   end
 
   @impl true
@@ -74,8 +95,30 @@ defmodule ElasticPool.WorkerManager do
 
   @impl true
   def handle_cast({:worker_ready, pid}, state) do
-    new_ready = MapSet.put(state.ready_workers, pid)
-    {:noreply, %{state | ready_workers: new_ready}}
+    # 1. Register the worker with the Pool synchronously
+    # This ensures the worker is in the 'available' list before we notify any waiters.
+    case ElasticPool.Pool.add_worker(state.config.pool, pid) do
+      :ok ->
+        new_ready = MapSet.put(state.ready_workers, pid)
+        new_state = %{state | ready_workers: new_ready}
+
+        # 2. Check if we can satisfy any clients waiting for pool readiness
+        remaining_waiting =
+          Enum.reduce(new_state.waiting_readiness, [], fn {from, count}, acc ->
+            if MapSet.size(new_ready) >= count do
+              GenServer.reply(from, :ok)
+              acc
+            else
+              [{from, count} | acc]
+            end
+          end)
+
+        {:noreply, %{new_state | waiting_readiness: remaining_waiting}}
+
+      :error ->
+        # Worker died during handover
+        {:noreply, state}
+    end
   end
 
   @impl true

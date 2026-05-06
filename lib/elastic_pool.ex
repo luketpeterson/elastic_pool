@@ -34,13 +34,20 @@ defmodule ElasticPool do
 
     case Supervisor.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} ->
-        case wait_until_ready(name, pid, initial, timeout) do
-          :ok ->
-            {:ok, pid}
+        manager_proc = Module.concat(name, WorkerManager)
 
-          {:error, reason} ->
-            if Process.alive?(pid), do: Supervisor.stop(pid)
-            {:error, reason}
+        try do
+          case ElasticPool.WorkerManager.wait_for_ready(manager_proc, initial, timeout) do
+            :ok ->
+              {:ok, pid}
+
+            {:error, reason} ->
+              if Process.alive?(pid), do: Supervisor.stop(pid)
+              {:error, reason}
+          end
+        catch
+          :exit, _ ->
+            {:error, :supervisor_died}
         end
 
       error ->
@@ -154,29 +161,5 @@ defmodule ElasticPool do
     :ets.lookup_element(stats_table, key, 2)
   rescue
     ArgumentError -> 0
-  end
-
-  defp wait_until_ready(name, pid, baseline, timeout) do
-    start = System.monotonic_time(:millisecond)
-    do_wait_until_ready(name, pid, baseline, timeout, start)
-  end
-
-  defp do_wait_until_ready(name, pid, baseline, timeout, start) do
-    if active_workers(name) >= baseline do
-      :ok
-    else
-      if !Process.alive?(pid) do
-        {:error, :supervisor_died}
-      else
-        now = System.monotonic_time(:millisecond)
-
-        if now - start > timeout do
-          {:error, :timeout}
-        else
-          Process.sleep(10)
-          do_wait_until_ready(name, pid, baseline, timeout, start)
-        end
-      end
-    end
   end
 end

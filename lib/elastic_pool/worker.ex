@@ -60,7 +60,6 @@ defmodule ElasticPool.Worker do
 
     # Notify that this worker is ready to take work
     ElasticPool.WorkerManager.worker_ready(manager, self())
-    ElasticPool.Pool.worker_ready(pool, self())
 
     :telemetry.execute(
       [:elastic_pool, :worker, :start],
