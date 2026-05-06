@@ -36,7 +36,7 @@ defmodule ElasticPool.Policies.Threshold do
             if waiting > state.scale_up_threshold do
               old_target + 1
             else
-              old_target
+              :no_change
             end
 
           :checkin ->
@@ -45,15 +45,15 @@ defmodule ElasticPool.Policies.Threshold do
             if available > state.available_reserve do
               max(old_target - 1, 0)
             else
-              old_target
+              :no_change
             end
 
           _ ->
-            old_target
+            :no_change
         end
       else
         # A worker is starting or stopping, so let's just let it be until that finshes
-        old_target
+        :no_change
       end
 
     {target, state}

@@ -169,32 +169,42 @@ defmodule ElasticPool.Pool do
 
         state = %{state | policy_state: new_policy_state}
 
-        if target != state.target_count do
-          ElasticPool.WorkerManager.set_target(state.manager, target)
+        case target do
+          :no_change ->
+            state
+
+          new_target ->
+            apply_target_decision(new_target, state)
+        end
+      end
+
+      defp apply_target_decision(new_target, state) when is_integer(new_target) do
+        if new_target != state.target_count do
+          ElasticPool.WorkerManager.set_target(state.manager, new_target)
           # Update the intent (target) stat immediately
-          :ets.insert(state.stats_table, {:target_workers, target})
+          :ets.insert(state.stats_table, {:target_workers, new_target})
 
           # Handle immediate scale-down if we have idle workers
           active_count = map_size(state.monitors)
 
-          if target < active_count do
-            to_dismiss_count = active_count - target
+          if new_target < active_count do
+            to_dismiss_count = active_count - new_target
 
             # We can only dismiss workers that are currently idle (available)
             to_dismiss_immediate_count = min(to_dismiss_count, length(state.available))
             {to_dismiss, _remaining} = Enum.split(state.available, to_dismiss_immediate_count)
 
             # Dismiss them locally and notify Manager
-            Enum.reduce(to_dismiss, %{state | target_count: target}, fn pid, acc ->
+            Enum.reduce(to_dismiss, %{state | target_count: new_target}, fn pid, acc ->
               acc = dismiss_worker_locally(pid, acc)
               ElasticPool.WorkerManager.stop_worker(state.manager, pid)
               acc
             end)
           else
-            %{state | target_count: target}
+            %{state | target_count: new_target}
           end
         else
-          %{state | target_count: target}
+          %{state | target_count: new_target}
         end
       end
 

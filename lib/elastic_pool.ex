@@ -113,7 +113,12 @@ defmodule ElasticPool do
         case Supervisor.start_link(__MODULE__, runtime_opts) do
           {:ok, pid} ->
             try do
-              case ElasticPool.WorkerManager.wait_for_ready(manager_handle, stats_handle, initial, timeout) do
+              case ElasticPool.WorkerManager.wait_for_ready(
+                     manager_handle,
+                     stats_handle,
+                     initial,
+                     timeout
+                   ) do
                 :ok ->
                   {:ok, pid}
 
@@ -133,7 +138,12 @@ defmodule ElasticPool do
 
       @impl true
       def init(runtime_opts) do
-        ElasticPool.init_pool(runtime_opts[:name] || __MODULE__, unquote(pool_mod), unquote(manager_mod), runtime_opts)
+        ElasticPool.init_pool(
+          runtime_opts[:name] || __MODULE__,
+          unquote(pool_mod),
+          unquote(manager_mod),
+          runtime_opts
+        )
       end
 
       # Specialized Worker Module for this Pool
@@ -288,10 +298,12 @@ defmodule ElasticPool do
         raise ArgumentError, "Worker module #{inspect(worker)} could not be loaded in #{module}"
 
       !function_exported?(worker, :handle_work, 3) ->
-        raise ArgumentError, "Worker module #{inspect(worker)} does not implement ElasticPool.Worker behavior (missing handle_work/3) in #{module}"
+        raise ArgumentError,
+              "Worker module #{inspect(worker)} does not implement ElasticPool.Worker behavior (missing handle_work/3) in #{module}"
 
       !Code.ensure_loaded?(policy) ->
-        raise ArgumentError, "Scaling policy module #{inspect(policy)} could not be loaded in #{module}"
+        raise ArgumentError,
+              "Scaling policy module #{inspect(policy)} could not be loaded in #{module}"
 
       true ->
         {worker, policy}
@@ -328,8 +340,10 @@ defmodule ElasticPool do
     # Group the configuration
     config = %{
       name: name,
-      pool: name, # Pool process uses the name directly
-      manager: manager_handle, # Stored atom handle
+      # Pool process uses the name directly
+      pool: name,
+      # Stored atom handle
+      manager: manager_handle,
       stats_table: stats_table,
       max_workers: Keyword.get(opts, :max_workers, :infinity),
       initial_workers: opts[:initial_workers] || 2,

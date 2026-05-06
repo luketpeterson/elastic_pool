@@ -6,7 +6,9 @@ defmodule FastWorker do
 end
 
 defmodule FastPool do
-  use ElasticPool, worker_handler: FastWorker
+  use ElasticPool,
+    worker_handler: FastWorker,
+    scaling_policy: ElasticPool.Policies.Null
 end
 
 defmodule PoolboyWorker do
@@ -29,7 +31,6 @@ defmodule PoolBench do
   @poolboy_pool :poolboy_bench_pool
 
   def run(argv \\ System.argv()) do
-    ensure_bench_env!()
     {benches, iterations} = parse_args(argv)
 
     for bench <- benches do
@@ -149,19 +150,6 @@ defmodule PoolBench do
     end
   end
 
-  defp ensure_bench_env! do
-    if Mix.env() != :bench do
-      Mix.raise("""
-      bench.exs must be run with MIX_ENV=bench.
-
-      Examples:
-        MIX_ENV=bench mix deps.get
-        MIX_ENV=bench mix run bench.exs
-        MIX_ENV=bench mix run bench.exs poolboy 100000
-      """)
-    end
-  end
-
   defp shutdown_pool(pool_pid) do
     Process.unlink(pool_pid)
     GenServer.stop(pool_pid, :normal, 5_000)
@@ -172,12 +160,12 @@ defmodule PoolBench do
 
   defp usage! do
     Mix.raise("""
-    Usage: MIX_ENV=bench mix run bench.exs [elastic_pool|poolboy] [iterations]
+    Usage: mix run bench.exs [elastic_pool|poolboy] [iterations]
 
     Examples:
-      MIX_ENV=bench mix run bench.exs
-      MIX_ENV=bench mix run bench.exs elastic_pool 100000
-      MIX_ENV=bench mix run bench.exs poolboy 100000
+      mix run bench.exs
+      mix run bench.exs elastic_pool 100000
+      mix run bench.exs poolboy 100000
     """)
   end
 end

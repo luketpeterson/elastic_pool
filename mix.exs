@@ -19,8 +19,8 @@ defmodule ElasticPool.MixProject do
 
   defp deps do
     [
+      # {:poolboy, "~> 1.5", runtime: false},  # Uncomment to run the benchmark
       {:telemetry, "~> 1.0"},
-      {:poolboy, "~> 1.5", only: :bench},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end
