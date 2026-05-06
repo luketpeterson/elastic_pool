@@ -20,6 +20,7 @@ defmodule ElasticPool.MixProject do
   defp deps do
     [
       {:telemetry, "~> 1.0"},
+      {:poolboy, "~> 1.5", only: :bench},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end
