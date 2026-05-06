@@ -145,8 +145,9 @@ defmodule ElasticPool.WorkerManager do
   # --- Private ---
 
   defp check_intensity(state) do
-    now = System.monotonic_time(:second)
-    cutoff = now - state.config.max_period
+    now = System.monotonic_time(:millisecond)
+    # max_period is in seconds, so convert to milliseconds
+    cutoff = now - (state.config.max_period * 1_000)
 
     # Filter out old restarts
     recent_restarts = [now | Enum.filter(state.restarts, &(&1 > cutoff))]

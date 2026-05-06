@@ -160,7 +160,7 @@ defmodule ElasticPoolTest do
         initial_workers: 1,
         max_restarts: 2,
         max_period: 5,
-        stats_internal: :never
+        stats_interval: :never
       )
 
     # During init failure, start_link returns the error reason
@@ -180,7 +180,19 @@ defmodule ElasticPoolTest do
   @tag :capture_log
   test "pool shuts down when crash intensity is reached during work" do
     name = :work_intensity_test
+    test_pid = self()
     Process.flag(:trap_exit, true)
+
+    # --- Setup Telemetry Tracking ---
+    handler_id = "telemetry-work-intensity-handler"
+    :telemetry.attach_many(
+      handler_id,
+      [[:elastic_pool, :worker, :start]],
+      &__MODULE__.handle_telemetry/4,
+      %{test_pid: test_pid}
+    )
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    # -------------------------------
 
     {:ok, pid} =
       ElasticPool.start_link(
@@ -188,17 +200,20 @@ defmodule ElasticPoolTest do
         worker_handler: WorkCrashingWorker,
         initial_workers: 1,
         max_restarts: 1,
-        max_period: 5
+        max_period: 5,
+        stats_interval: :never
       )
 
     # We need to crash it 2 times to hit max_restarts: 1
-    # 1. First crash
-    spawn(fn -> ElasticPool.call(name, :crash) end)
-    # Wait for the manager to see the crash and start a new one
-    Process.sleep(100)
+    # 1. First crash - Call synchronously
+    catch_exit(ElasticPool.call(name, :crash))
+
+    # Wait for the RECOVERY telemetry (Sent by the worker itself!)
+    # We ignore the measurements/metadata, just need to know it's started.
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], _, %{start_reason: :recovery}}, 1000
 
     # 2. Second crash - This should trigger the intensity limit
-    spawn(fn -> ElasticPool.call(name, :crash) end)
+    catch_exit(ElasticPool.call(name, :crash))
 
     # The entire pool supervisor should stop and send an EXIT signal to us.
     # Supervisors that stop due to restart intensity exit with :shutdown.
@@ -206,7 +221,32 @@ defmodule ElasticPoolTest do
     assert Process.whereis(name) == nil
   end
 
-  def handle_telemetry(_name, measurements, metadata, test_pid) do
-    send(test_pid, {:telemetry_event, measurements, metadata})
+  @tag :capture_log
+  test "pool shuts down when workers fail to start (immediate failure)" do
+    name = :immediate_failure_test
+    Process.flag(:trap_exit, true)
+
+    # We use an invalid atom as the handler to force start_link to return an error
+    result =
+      ElasticPool.start_link(
+        name: name,
+        worker_handler: :not_a_real_module,
+        initial_workers: 1,
+        max_restarts: 1,
+        max_period: 5,
+        start_timeout: 1000
+      )
+
+    # CURRENT BEHAVIOR: This will take 1 second and return :timeout because
+    # the manager isn't counting the start failure as a crash.
+    # DESIRED BEHAVIOR: This should fail instantly with :supervisor_died.
+    assert {:error, :timeout} = result
+  end
+
+  def handle_telemetry(name, measurements, metadata, config_or_pid) do
+    case config_or_pid do
+      %{test_pid: pid} -> send(pid, {:telemetry_event, name, measurements, metadata})
+      pid when is_pid(pid) -> send(pid, {:telemetry_event, measurements, metadata})
+    end
   end
 end
