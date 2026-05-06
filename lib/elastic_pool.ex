@@ -67,12 +67,17 @@ defmodule ElasticPool do
   All other options should be passed to `start_link/1` at runtime.
   """
   defmacro __using__(opts) do
-    quote bind_quoted: [opts: opts] do
+    # Pre-compute absolute module names to avoid scoping issues during expansion
+    worker_mod = Module.concat(__CALLER__.module, Worker)
+    manager_mod = Module.concat(__CALLER__.module, WorkerManager)
+    pool_mod = Module.concat(__CALLER__.module, Pool)
+
+    quote do
       use Supervisor
       require ElasticPool
 
       # Perform compile-time validation and separation of options.
-      {worker, policy} = ElasticPool.validate_macro_config!(__MODULE__, opts)
+      {worker, policy} = ElasticPool.validate_macro_config!(__MODULE__, unquote(opts))
 
       @worker_handler worker
       @scaling_policy policy
@@ -128,13 +133,26 @@ defmodule ElasticPool do
 
       @impl true
       def init(runtime_opts) do
-        ElasticPool.init_pool(runtime_opts[:name] || __MODULE__, __MODULE__.Worker, @scaling_policy, runtime_opts)
+        ElasticPool.init_pool(runtime_opts[:name] || __MODULE__, unquote(pool_mod), unquote(manager_mod), runtime_opts)
       end
 
       # Specialized Worker Module for this Pool
       defmodule Worker do
         require ElasticPool.Worker
         ElasticPool.Worker.__monomorphize__(worker)
+      end
+
+      # Specialized WorkerManager Module for this Pool
+      defmodule WorkerManager do
+        require ElasticPool.WorkerManager
+        # Link to the specialized sibling Worker module using its absolute name
+        ElasticPool.WorkerManager.__monomorphize__(unquote(worker_mod))
+      end
+
+      # Specialized Pool Module for this Pool
+      defmodule Pool do
+        require ElasticPool.Pool
+        ElasticPool.Pool.__monomorphize__(policy)
       end
 
       @doc """
@@ -148,7 +166,7 @@ defmodule ElasticPool do
       @doc """
       Performs a synchronous call to a specific named instance of the pool.
       """
-      def call(name, request, timeout \\ 30_000) do
+      def call(name, request, timeout) do
         ElasticPool.execute_call(name, request, timeout)
       end
 
@@ -284,8 +302,7 @@ defmodule ElasticPool do
   def validate_config!(_module, _opts), do: :ok
 
   @doc false
-  def init_pool(name, worker, policy, opts) do
-    worker_handler = worker
+  def init_pool(name, pool_mod, manager_mod, opts) do
     worker_args = opts[:worker_args] || []
 
     # ZERO-CONCAT DESIGN:
@@ -320,19 +337,17 @@ defmodule ElasticPool do
       max_period: opts[:max_period] || 5,
 
       # Scaling Policy Configuration
-      scaling_policy: policy,
       scaling_policy_opts: opts[:scaling_policy_opts] || [],
 
       # Worker Configuration
-      worker_handler: worker_handler,
       worker_args: worker_args
     }
 
     stats_interval = Keyword.get(opts, :stats_interval, 5000)
 
     children = [
-      {ElasticPool.Pool, config},
-      {ElasticPool.WorkerManager, config}
+      {pool_mod, config},
+      {manager_mod, config}
     ]
 
     children =

@@ -1,11 +1,230 @@
 defmodule ElasticPool.Pool do
   @moduledoc false
-  use GenServer
-  require Logger
-  require ElasticPool
 
-  def start_link(config) do
-    GenServer.start_link(__MODULE__, config, name: config.pool)
+  @doc false
+  defmacro __monomorphize__(policy_mod) do
+    quote bind_quoted: [policy_mod: policy_mod] do
+      use GenServer
+      require Logger
+      require ElasticPool
+
+      @policy_mod policy_mod
+
+      def start_link(config) do
+        GenServer.start_link(__MODULE__, config, name: config.pool)
+      end
+
+      def checkout(pool, timeout \\ :infinity) do
+        GenServer.call(pool, :checkout, timeout)
+      end
+
+      def add_worker(pool, worker_pid) do
+        GenServer.call(pool, {:add_worker, worker_pid})
+      end
+
+      def checkin(pool, worker_pid) do
+        GenServer.cast(pool, {:checkin, worker_pid})
+      end
+
+      # --- Callbacks ---
+      @impl true
+      def init(config) do
+        policy_state =
+          @policy_mod.init(%{
+            policy_opts: config.scaling_policy_opts,
+            pool_config: config
+          })
+
+        state = %{
+          # Idle worker inventory available for checkout
+          available: [],
+          # FIFO queue for clients when the pool is at capacity
+          waiting: :queue.new(),
+          # Map of {pid => monitor_ref} tracking all active/monitored workers
+          monitors: %{},
+          # High-water mark of concurrent active workers for observability
+          peak_workers: 0,
+          # PID/Name of the WorkerManager used for physical worker lifecycle tasks
+          manager: config.manager,
+          # Named ETS table used to publish real-time stats to external callers
+          # In the shared-atom design, this is the same as the pool name.
+          stats_table: config.stats_table,
+          # Atom name of the pool instance for telemetry and policy identification
+          pool_name: config.name,
+          # Internal state maintained by the scaling policy module
+          policy_state: policy_state,
+          # Cached scaling target to avoid redundant logic/lookups in hot paths
+          target_count: config.initial_workers
+        }
+
+        update_ets(state)
+        {:ok, state}
+      end
+
+      @impl true
+      def handle_call(:checkout, from, state) do
+        # Efficiently increment request count on every checkout attempt
+        :ets.update_counter(state.stats_table, :request_count, {2, 1})
+
+        case state.available do
+          [pid | rest] ->
+            new_state = %{state | available: rest}
+            update_ets(new_state)
+            new_state = evaluate_policy(:checkout_success, new_state)
+            {:reply, {:ok, nil, pid}, new_state}
+
+          [] ->
+            new_waiting = :queue.in(from, state.waiting)
+            new_state = %{state | waiting: new_waiting}
+            update_ets(new_state)
+            new_state = evaluate_policy(:checkout_failed, new_state)
+            {:noreply, new_state}
+        end
+      end
+
+      @impl true
+      def handle_call({:add_worker, pid}, _from, state) do
+        # New worker registration from WorkerManager
+        state = evaluate_policy(:worker_ready, state)
+
+        if Process.alive?(pid) do
+          state = ensure_monitored(state, pid)
+          new_active_count = map_size(state.monitors)
+          state = %{state | peak_workers: max(state.peak_workers, new_active_count)}
+
+          if state.target_count < new_active_count do
+            {:reply, :ok, dismiss_worker(pid, state)}
+          else
+            {:reply, :ok, put_worker_in_rotation(pid, state)}
+          end
+        else
+          new_state = handle_down(state, pid)
+          update_ets(new_state)
+          {:reply, :error, new_state}
+        end
+      end
+
+      @impl true
+      def handle_cast({:checkin, pid}, state) do
+        # High-throughput path: Worker returning from job
+        state = evaluate_policy(:checkin, state)
+
+        if state.target_count < map_size(state.monitors) do
+          # Drain: We are over target
+          {:noreply, dismiss_worker(pid, state)}
+        else
+          {:noreply, put_worker_in_rotation(pid, state)}
+        end
+      end
+
+      @impl true
+      def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+        new_state = handle_down(state, pid)
+        update_ets(new_state)
+        {:noreply, evaluate_policy(:checkin, new_state)}
+      end
+
+      # --- Private ---
+
+      defp put_worker_in_rotation(pid, state) do
+        case :queue.out(state.waiting) do
+          {{:value, from}, rest} ->
+            GenServer.reply(from, {:ok, nil, pid})
+            new_state = %{state | waiting: rest}
+            update_ets(new_state)
+            new_state
+
+          {:empty, _} ->
+            if pid in state.available do
+              state
+            else
+              new_state = %{state | available: [pid | state.available]}
+              update_ets(new_state)
+              new_state
+            end
+        end
+      end
+
+      defp dismiss_worker(pid, state) do
+        new_state = dismiss_worker_locally(pid, state)
+        ElasticPool.WorkerManager.stop_worker(state.manager, pid)
+        new_state
+      end
+
+      defp dismiss_worker_locally(pid, state) do
+        if ref = Map.get(state.monitors, pid) do
+          Process.demonitor(ref)
+        end
+
+        new_monitors_map = Map.delete(state.monitors, pid)
+        new_available = Enum.reject(state.available, &(&1 == pid))
+        new_state = %{state | monitors: new_monitors_map, available: new_available}
+        update_ets(new_state)
+        new_state
+      end
+
+      defp evaluate_policy(event, state) do
+        {target, new_policy_state} =
+          @policy_mod.handle_event(event, state.pool_name, state.policy_state)
+
+        state = %{state | policy_state: new_policy_state}
+
+        if target != state.target_count do
+          ElasticPool.WorkerManager.set_target(state.manager, target)
+          # Update the intent (target) stat immediately
+          :ets.insert(state.stats_table, {:target_workers, target})
+
+          # Handle immediate scale-down if we have idle workers
+          active_count = map_size(state.monitors)
+
+          if target < active_count do
+            to_dismiss_count = active_count - target
+
+            # We can only dismiss workers that are currently idle (available)
+            to_dismiss_immediate_count = min(to_dismiss_count, length(state.available))
+            {to_dismiss, _remaining} = Enum.split(state.available, to_dismiss_immediate_count)
+
+            # Dismiss them locally and notify Manager
+            Enum.reduce(to_dismiss, %{state | target_count: target}, fn pid, acc ->
+              acc = dismiss_worker_locally(pid, acc)
+              ElasticPool.WorkerManager.stop_worker(state.manager, pid)
+              acc
+            end)
+          else
+            %{state | target_count: target}
+          end
+        else
+          %{state | target_count: target}
+        end
+      end
+
+      defp update_ets(state) do
+        stats = [
+          active_workers: map_size(state.monitors),
+          available_workers: length(state.available),
+          peak_workers: state.peak_workers,
+          waiting_clients: :queue.len(state.waiting)
+        ]
+
+        :ets.insert(state.stats_table, stats)
+        state
+      end
+
+      defp ensure_monitored(state, pid) do
+        if Map.has_key?(state.monitors, pid) do
+          state
+        else
+          ref = Process.monitor(pid)
+          %{state | monitors: Map.put(state.monitors, pid, ref)}
+        end
+      end
+
+      defp handle_down(state, pid) do
+        new_monitors = Map.delete(state.monitors, pid)
+        new_available = Enum.reject(state.available, &(&1 == pid))
+        %{state | monitors: new_monitors, available: new_available}
+      end
+    end
   end
 
   def checkout(pool, timeout \\ :infinity) do
@@ -18,208 +237,5 @@ defmodule ElasticPool.Pool do
 
   def checkin(pool, worker_pid) do
     GenServer.cast(pool, {:checkin, worker_pid})
-  end
-
-  # --- Callbacks ---
-  @impl true
-  def init(config) do
-    policy_mod = config.scaling_policy
-
-    policy_state =
-      policy_mod.init(%{
-        policy_opts: config.scaling_policy_opts,
-        pool_config: config
-      })
-
-    state = %{
-      # Idle worker inventory available for checkout
-      available: [],
-      # FIFO queue for clients when the pool is at capacity
-      waiting: :queue.new(),
-      # Map of {pid => monitor_ref} tracking all active/monitored workers
-      monitors: %{},
-      # High-water mark of concurrent active workers for observability
-      peak_workers: 0,
-      # PID/Name of the WorkerManager used for physical worker lifecycle tasks
-      manager: config.manager,
-      # Named ETS table used to publish real-time stats to external callers
-      # In the shared-atom design, this is the same as the pool name.
-      stats_table: config.stats_table,
-      # Atom name of the pool instance for telemetry and policy identification
-      pool_name: config.name,
-      # Pluggable scaling logic module
-      policy_mod: policy_mod,
-      # Internal state maintained by the scaling policy module
-      policy_state: policy_state,
-      # Cached scaling target to avoid redundant logic/lookups in hot paths
-      target_count: config.initial_workers
-    }
-
-    update_ets(state)
-    {:ok, state}
-  end
-
-  @impl true
-  def handle_call(:checkout, from, state) do
-    # Efficiently increment request count on every checkout attempt
-    :ets.update_counter(state.stats_table, :request_count, {2, 1})
-
-    case state.available do
-      [pid | rest] ->
-        new_state = %{state | available: rest}
-        update_ets(new_state)
-        new_state = evaluate_policy(:checkout_success, new_state)
-        {:reply, {:ok, nil, pid}, new_state}
-
-      [] ->
-        new_waiting = :queue.in(from, state.waiting)
-        new_state = %{state | waiting: new_waiting}
-        update_ets(new_state)
-        new_state = evaluate_policy(:checkout_failed, new_state)
-        {:noreply, new_state}
-    end
-  end
-
-  @impl true
-  def handle_call({:add_worker, pid}, _from, state) do
-    # New worker registration from WorkerManager
-    state = evaluate_policy(:worker_ready, state)
-
-    if Process.alive?(pid) do
-      state = ensure_monitored(state, pid)
-      new_active_count = map_size(state.monitors)
-      state = %{state | peak_workers: max(state.peak_workers, new_active_count)}
-
-      if state.target_count < new_active_count do
-        {:reply, :ok, dismiss_worker(pid, state)}
-      else
-        {:reply, :ok, put_worker_in_rotation(pid, state)}
-      end
-    else
-      new_state = handle_down(state, pid)
-      update_ets(new_state)
-      {:reply, :error, new_state}
-    end
-  end
-
-  @impl true
-  def handle_cast({:checkin, pid}, state) do
-    # High-throughput path: Worker returning from job
-    state = evaluate_policy(:checkin, state)
-
-    if state.target_count < map_size(state.monitors) do
-      # Drain: We are over target
-      {:noreply, dismiss_worker(pid, state)}
-    else
-      {:noreply, put_worker_in_rotation(pid, state)}
-    end
-  end
-
-  @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    new_state = handle_down(state, pid)
-    update_ets(new_state)
-    {:noreply, evaluate_policy(:checkin, new_state)}
-  end
-
-  # --- Private ---
-
-  defp put_worker_in_rotation(pid, state) do
-    case :queue.out(state.waiting) do
-      {{:value, from}, rest} ->
-        GenServer.reply(from, {:ok, nil, pid})
-        new_state = %{state | waiting: rest}
-        update_ets(new_state)
-        new_state
-
-      {:empty, _} ->
-        if pid in state.available do
-          state
-        else
-          new_state = %{state | available: [pid | state.available]}
-          update_ets(new_state)
-          new_state
-        end
-    end
-  end
-
-  defp dismiss_worker(pid, state) do
-    new_state = dismiss_worker_locally(pid, state)
-    ElasticPool.WorkerManager.stop_worker(state.manager, pid)
-    new_state
-  end
-
-  defp dismiss_worker_locally(pid, state) do
-    if ref = Map.get(state.monitors, pid) do
-      Process.demonitor(ref)
-    end
-
-    new_monitors_map = Map.delete(state.monitors, pid)
-    new_available = Enum.reject(state.available, &(&1 == pid))
-    new_state = %{state | monitors: new_monitors_map, available: new_available}
-    update_ets(new_state)
-    new_state
-  end
-
-  defp evaluate_policy(event, state) do
-    {target, new_policy_state} =
-      state.policy_mod.handle_event(event, state.pool_name, state.policy_state)
-
-    state = %{state | policy_state: new_policy_state}
-
-    if target != state.target_count do
-      ElasticPool.WorkerManager.set_target(state.manager, target)
-      # Update the intent (target) stat immediately
-      :ets.insert(state.stats_table, {:target_workers, target})
-
-      # Handle immediate scale-down if we have idle workers
-      active_count = map_size(state.monitors)
-
-      if target < active_count do
-        to_dismiss_count = active_count - target
-
-        # We can only dismiss workers that are currently idle (available)
-        to_dismiss_immediate_count = min(to_dismiss_count, length(state.available))
-        {to_dismiss, _remaining} = Enum.split(state.available, to_dismiss_immediate_count)
-
-        # Dismiss them locally and notify Manager
-        Enum.reduce(to_dismiss, %{state | target_count: target}, fn pid, acc ->
-          acc = dismiss_worker_locally(pid, acc)
-          ElasticPool.WorkerManager.stop_worker(state.manager, pid)
-          acc
-        end)
-      else
-        %{state | target_count: target}
-      end
-    else
-      state
-    end
-  end
-
-  defp update_ets(state) do
-    stats = [
-      active_workers: map_size(state.monitors),
-      available_workers: length(state.available),
-      peak_workers: state.peak_workers,
-      waiting_clients: :queue.len(state.waiting)
-    ]
-
-    :ets.insert(state.stats_table, stats)
-    state
-  end
-
-  defp ensure_monitored(state, pid) do
-    if Map.has_key?(state.monitors, pid) do
-      state
-    else
-      ref = Process.monitor(pid)
-      %{state | monitors: Map.put(state.monitors, pid, ref)}
-    end
-  end
-
-  defp handle_down(state, pid) do
-    new_monitors = Map.delete(state.monitors, pid)
-    new_available = Enum.reject(state.available, &(&1 == pid))
-    %{state | monitors: new_monitors, available: new_available}
   end
 end
