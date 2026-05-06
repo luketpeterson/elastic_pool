@@ -199,13 +199,13 @@ defmodule ElasticPool.WorkerManager do
   defp start_worker(config, reason) do
     worker_args =
       [
-        handler: config.worker_handler,
         pool: config.pool,
         manager: config.manager,
         start_reason: reason
       ] ++ config.worker_args
 
     # Link directly to the manager so we can trap exits
-    ElasticPool.Worker.start_link(worker_args)
+    # MONOMORPHIZED: We call the specialized worker module directly.
+    config.worker_handler.start_link(worker_args)
   end
 end

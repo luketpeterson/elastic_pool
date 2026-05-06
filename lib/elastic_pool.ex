@@ -5,22 +5,29 @@ defmodule ElasticPool do
   ElasticPool uses a macro-based approach to provide compile-time validation,
   monomorphized data access, and a clean, module-based API.
 
-  ## Options
+  ## Configuration
 
-  The following options can be provided either at compile-time (in the `use` macro)
-  or overridden at runtime (in `start_link/1`).
+  ElasticPool separates configuration into two phases:
+
+  ### 1. Macro Options (Compile-time)
+  These are passed to `use ElasticPool` and are used to generate specialized
+  code. They are required for monomorphization.
 
   - `:worker_handler` - (Required) Worker module implementing `ElasticPool.Worker`.
-  - `:worker_args` - Arguments passed to each worker. Defaults to `[]`.
+  - `:scaling_policy` - Scaling policy module. Defaults to
+    `ElasticPool.Policies.Threshold`.
+
+  ### 2. Runtime Options
+  These are passed to your pool's `start_link/1` function.
+
+  - `:name` - name of the pool instance. Defaults to the module name.
+  - `:worker_args` - Arguments passed to the handler module's `init/1` callback. Defaults to `[]`.
   - `:initial_workers` - Pool size at initialization. Defaults to `2`.
   - `:max_workers` - Absolute ceiling on the number of workers that may be
     started, regardless of scaling policy. Defaults to `:infinity`.
     Use `max_workers` when each worker represents a specific and finite
     resource that should not be over-committed, such as a physical CPU core,
-    a fixed-size license pool, or some other hard capacity limit that should
-    never be exceeded.
-  - `:scaling_policy` - Scaling policy module. Defaults to
-    `ElasticPool.Policies.Threshold`.
+    a fixed-size license pool, or some other hard capacity limit.
   - `:scaling_policy_opts` - Options passed to the scaling policy.
   - `:start_timeout` - Time in ms to wait for initial workers to come up.
     Defaults to `5000`.
@@ -28,20 +35,18 @@ defmodule ElasticPool do
     Defaults to `3`.
   - `:max_period` - Time window for `:max_restarts` in seconds. Defaults to `5`.
   - `:stats_interval` - Time in ms for periodic status telemetry heartbeats.
-    Set to `:never` to disable. Defaults to `5000`.
+    Set to `:never` to disable periodic stats. Defaults to `5000`.
 
   ## Example
 
       defmodule MyPool do
         use ElasticPool,
           worker_handler: MyWorker,
-          initial_workers: 5,
-          max_workers: 10,
-          scaling_policy_opts: [available_reserve: 2]
+          scaling_policy: MyCustomPolicy
       end
 
-      # Start it in your supervision tree:
-      {MyPool, []}
+      # Start it in your supervision tree with runtime options:
+      {MyPool, [initial_workers: 5, max_workers: 10]}
 
       # Perform work:
       MyPool.call(:do_something)
@@ -53,38 +58,54 @@ defmodule ElasticPool do
   Using this macro performs compile-time validation of the worker and policy
   and generates a specialized supervisor and API for the pool.
 
-  See the module documentation for the full list of available options.
+  ## Macro Options (Compile-time only)
+
+  - `:worker_handler` - (Required) Worker module implementing `ElasticPool.Worker`.
+  - `:scaling_policy` - Scaling policy module. Defaults to
+    `ElasticPool.Policies.Threshold`.
+
+  All other options should be passed to `start_link/1` at runtime.
   """
   defmacro __using__(opts) do
     quote bind_quoted: [opts: opts] do
       use Supervisor
       require ElasticPool
 
-      # Perform compile-time validation of the provided modules.
-      ElasticPool.validate_config!(__MODULE__, opts)
+      # Perform compile-time validation and separation of options.
+      {worker, policy} = ElasticPool.validate_macro_config!(__MODULE__, opts)
 
-      # Default instance handle (compile-time constant)
+      @worker_handler worker
+      @scaling_policy policy
+
+      # Default handle for the monomorphized instance
       @default_name __MODULE__
 
       @doc """
       Starts the pool supervisor.
 
-      Inherits all options from the `use ElasticPool` definition, which can
-      be overridden here. By default, the pool instance is named after the module.
+      Accepts runtime configuration:
+      - `:name` - name of the pool instance. Defaults to the module name.
+      - `:initial_workers` - Pool size at initialization. Defaults to `2`.
+      - `:max_workers` - Absolute ceiling on the number of workers.
+      - `:scaling_policy_opts` - Options passed to the scaling policy.
+      - `:start_timeout` - Time in ms to wait for initial workers.
+      - `:max_restarts` / `:max_period` - Worker crash intensity limits.
+      - `:stats_interval` - Telemetry heartbeat interval (ms).
+      - `:worker_args` - Arguments passed to the handler module's `init/1` callback.
       """
       def start_link(runtime_opts \\ []) do
-        full_opts = Keyword.merge(unquote(opts), runtime_opts)
-        name = full_opts[:name] || __MODULE__
-        initial = full_opts[:initial_workers] || 2
-        timeout = full_opts[:start_timeout] || 5000
+        name = runtime_opts[:name] || __MODULE__
+        initial = runtime_opts[:initial_workers] || 2
+        timeout = runtime_opts[:start_timeout] || 5000
 
-        # We need the sub-process names to match the ones that are going to be set in `init_pool`
+        # All referents are calculated once and passed down.
+        # Design: name (Pool/Stats), Module.concat(name, WorkerManager) (Manager).
         manager_handle = Module.concat(name, WorkerManager)
         stats_handle = name
 
         # We start the supervisor unnamed to allow the Pool GenServer to take
         # the provided 'name' atom.
-        case Supervisor.start_link(__MODULE__, full_opts) do
+        case Supervisor.start_link(__MODULE__, runtime_opts) do
           {:ok, pid} ->
             try do
               case ElasticPool.WorkerManager.wait_for_ready(manager_handle, stats_handle, initial, timeout) do
@@ -106,8 +127,14 @@ defmodule ElasticPool do
       end
 
       @impl true
-      def init(opts) do
-        ElasticPool.init_pool(opts[:name] || __MODULE__, opts)
+      def init(runtime_opts) do
+        ElasticPool.init_pool(runtime_opts[:name] || __MODULE__, __MODULE__.Worker, @scaling_policy, runtime_opts)
+      end
+
+      # Specialized Worker Module for this Pool
+      defmodule Worker do
+        require ElasticPool.Worker
+        ElasticPool.Worker.__monomorphize__(worker)
       end
 
       @doc """
@@ -121,7 +148,7 @@ defmodule ElasticPool do
       @doc """
       Performs a synchronous call to a specific named instance of the pool.
       """
-      def call(name, request, timeout) do
+      def call(name, request, timeout \\ 30_000) do
         ElasticPool.execute_call(name, request, timeout)
       end
 
@@ -220,26 +247,45 @@ defmodule ElasticPool do
   # --- Internal Helpers ---
 
   @doc false
-  def validate_config!(module, opts) do
+  def validate_macro_config!(module, opts) do
     worker = opts[:worker_handler] || raise "Missing :worker_handler in #{module}"
     policy = opts[:scaling_policy] || ElasticPool.Policies.Threshold
+
+    # Ensure ONLY macro options are present
+    allowed_keys = [:worker_handler, :scaling_policy]
+    provided_keys = Keyword.keys(opts)
+    extra_keys = provided_keys -- allowed_keys
+
+    if extra_keys != [] do
+      raise ArgumentError, """
+      Invalid macro options in #{module}: #{inspect(extra_keys)}.
+      Only :worker_handler and :scaling_policy should be passed to 'use ElasticPool'.
+      All other options should be passed to start_link/1 at runtime.
+      """
+    end
 
     # Check for presence and behavior at compile time if possible
     cond do
       !Code.ensure_loaded?(worker) ->
         raise ArgumentError, "Worker module #{inspect(worker)} could not be loaded in #{module}"
 
+      !function_exported?(worker, :handle_work, 3) ->
+        raise ArgumentError, "Worker module #{inspect(worker)} does not implement ElasticPool.Worker behavior (missing handle_work/3) in #{module}"
+
       !Code.ensure_loaded?(policy) ->
         raise ArgumentError, "Scaling policy module #{inspect(policy)} could not be loaded in #{module}"
 
       true ->
-        :ok
+        {worker, policy}
     end
   end
 
   @doc false
-  def init_pool(name, opts) do
-    worker_handler = Keyword.fetch!(opts, :worker_handler)
+  def validate_config!(_module, _opts), do: :ok
+
+  @doc false
+  def init_pool(name, worker, policy, opts) do
+    worker_handler = worker
     worker_args = opts[:worker_args] || []
 
     # ZERO-CONCAT DESIGN:
@@ -274,7 +320,7 @@ defmodule ElasticPool do
       max_period: opts[:max_period] || 5,
 
       # Scaling Policy Configuration
-      scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,
+      scaling_policy: policy,
       scaling_policy_opts: opts[:scaling_policy_opts] || [],
 
       # Worker Configuration

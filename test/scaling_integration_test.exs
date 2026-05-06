@@ -62,15 +62,12 @@ end
   defmodule ScheduledPool do
     use ElasticPool,
       worker_handler: TrackingWorker,
-      initial_workers: 2,
       scaling_policy: ScheduledPolicy
   end
 
   defmodule OverTargetPool do
     use ElasticPool,
       worker_handler: TrackingWorker,
-      initial_workers: 1,
-      max_workers: 3,
       scaling_policy: OverTargetPolicy
   end
 
@@ -96,8 +93,7 @@ end
 
   defmodule CrashRecoveryPool do
     use ElasticPool,
-      worker_handler: TrackingCrashingWorker,
-      initial_workers: 1
+      worker_handler: TrackingCrashingWorker
   end
 
   # --------------------------
@@ -117,7 +113,10 @@ end
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} = ScheduledPool.start_link(worker_args: [test_pid: test_pid])
+    {:ok, pid} = ScheduledPool.start_link(
+      initial_workers: 2,
+      worker_args: [test_pid: test_pid]
+    )
 
     # 1. Initial State: 2 workers
     assert ScheduledPool.target_workers() == 2
@@ -189,7 +188,11 @@ end
     test_pid = self()
     name = ScheduledPool
 
-    {:ok, pid} = ScheduledPool.start_link(initial_workers: 10, max_workers: 10, worker_args: [test_pid: test_pid])
+    {:ok, pid} = ScheduledPool.start_link(
+      initial_workers: 10,
+      max_workers: 10,
+      worker_args: [test_pid: test_pid]
+    )
 
     manager_name = Module.concat(name, WorkerManager)
     manager_pid = Process.whereis(manager_name)
@@ -221,7 +224,11 @@ end
     test_pid = self()
     name = OverTargetPool
 
-    {:ok, pid} = OverTargetPool.start_link(worker_args: [test_pid: test_pid])
+    {:ok, pid} = OverTargetPool.start_link(
+      initial_workers: 1,
+      max_workers: 3,
+      worker_args: [test_pid: test_pid]
+    )
 
     assert_receive {:worker_init, _pid}, 1000
 
@@ -255,7 +262,10 @@ end
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} = CrashRecoveryPool.start_link(worker_args: [test_pid: test_pid])
+    {:ok, pid} = CrashRecoveryPool.start_link(
+      initial_workers: 1,
+      worker_args: [test_pid: test_pid]
+    )
 
     # 1. Capture the initial worker PID and telemetry
     assert_receive {:worker_init, first_pid}
