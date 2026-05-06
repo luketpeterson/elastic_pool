@@ -11,8 +11,8 @@ end
 defmodule PoolBench do
   def run(iterations \\ 100_000) do
     IO.puts "Starting FastPool..."
-    # We use enough workers to ensure we never hit the checkout queue overhead
-    {:ok, _pid} = FastPool.start_link(initial_workers: 20, stats_interval: :never)
+    # The worker isn't doing anything, so the number of workers doesn't seem to matter
+    {:ok, _pid} = FastPool.start_link(initial_workers: 1, stats_interval: :never)
 
     IO.puts "Warming up..."
     for _ <- 1..1000, do: FastPool.call(:ping)
@@ -32,6 +32,7 @@ defmodule PoolBench do
     IO.puts "Total Time:       #{Float.round(time / 1000, 2)}ms"
     IO.puts "Avg Latency:      #{Float.round(avg_us, 3)}µs"
     IO.puts "Throughput:       #{Float.round(qps, 0)} calls/sec"
+    IO.puts "Threads Created:  #{FastPool.peak_workers()}"
   end
 end
 
