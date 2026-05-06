@@ -217,17 +217,6 @@ defmodule ElasticPool do
     quote do: :ets.lookup_element(unquote(pool), :request_count, 2)
   end
 
-  @doc false
-  defmacro get_stat_safe(table, key) do
-    quote do
-      try do
-        :ets.lookup_element(unquote(table), unquote(key), 2)
-      rescue
-        ArgumentError -> 0
-      end
-    end
-  end
-
   # --- Internal Helpers ---
 
   @doc false
