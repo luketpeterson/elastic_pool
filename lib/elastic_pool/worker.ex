@@ -100,10 +100,15 @@ defmodule ElasticPool.Worker do
         end
       end
 
+      @doc false
+      def identity(x), do: x
+
       @impl true
       def handle_call(request, from, state) do
         # MONOMORPHIZED: This is a direct call to the handler module.
-        case @handler.handle_work(request, from, state.handler_state) do
+        # We pass the result through identity/1 to silence 'never match' warnings
+        # caused by the compiler's reachability analysis of specialized workers.
+        case identity(@handler.handle_work(request, from, state.handler_state)) do
           {:reply, reply, new_handler_state} ->
             {:reply, reply, %{state | handler_state: new_handler_state}}
 
