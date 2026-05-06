@@ -1,13 +1,14 @@
 defmodule ElasticPool.WorkerManager do
-  @moduledoc """
-  The supervisor and lifecycle manager for all worker processes in the pool.
+  @moduledoc false
 
-  WorkerManager is responsible for:
-  - Starting new worker processes to meet scaling targets.
-  - Stopping worker processes when requested by the Pool.
-  - Monitoring workers and performing instant recovery if they crash.
-  - Acting as the direct supervisor for all workers by trapping exits.
-  """
+  # Internal: The supervisor and lifecycle manager for all worker processes in the pool.
+  #
+  # WorkerManager is responsible for:
+  # - Starting new worker processes to meet scaling targets.
+  # - Stopping worker processes when requested by the Pool.
+  # - Monitoring workers and performing instant recovery if they crash.
+  # - Acting as the direct supervisor for all workers by trapping exits.
+
   use GenServer
 
   def start_link(config) do

@@ -1,14 +1,7 @@
 defmodule ElasticPool.StatsPoller do
-  @moduledoc """
-  A periodic poller that emits telemetry heartbeats for an ElasticPool.
+  @moduledoc false
+  # A periodic poller that emits telemetry heartbeats for an ElasticPool.
 
-  Add this to your supervision tree to enable periodic status reporting:
-
-      children = [
-        {ElasticPool, name: MyPool, ...},
-        {ElasticPool.StatsPoller, pool: MyPool, interval: 5000}
-      ]
-  """
   use GenServer
 
   def start_link(opts) do

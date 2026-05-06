@@ -43,7 +43,8 @@ defmodule ElasticPoolTest do
         name: name,
         worker_handler: ElasticPoolTest.TerminationWorker,
         initial_workers: worker_count,
-        worker_args: [test_pid: test_pid]
+        worker_args: [test_pid: test_pid],
+        stats_interval: :never
       )
 
     # Shutdown the pool
@@ -123,11 +124,9 @@ defmodule ElasticPoolTest do
       ElasticPool.start_link(
         name: name,
         worker_handler: ElasticPoolTest.TestWorker,
-        initial_workers: 2
+        initial_workers: 2,
+        stats_interval: 100
       )
-
-    # Start the poller with a very short interval for the test
-    {:ok, _poller_pid} = ElasticPool.StatsPoller.start_link(pool: name, interval: 100)
 
     # We should receive a heartbeat
     assert_receive {:telemetry_event, measurements, %{pool_name: ^name}}, 500
@@ -160,7 +159,8 @@ defmodule ElasticPoolTest do
         worker_handler: FastCrashingWorker,
         initial_workers: 1,
         max_restarts: 2,
-        max_period: 5
+        max_period: 5,
+        stats_internal: :never
       )
 
     # During init failure, start_link returns the error reason

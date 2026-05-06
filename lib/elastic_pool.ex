@@ -26,6 +26,8 @@ defmodule ElasticPool do
   - `:max_restarts` - maximum number of worker crashes allowed in `:max_period`,
     defaults to `3`
   - `:max_period` - time window for `:max_restarts` in seconds, defaults to `5`
+  - `:stats_interval` - time in ms for periodic status telemetry heartbeats.
+    Set to `:never` to disable. Defaults to `5000`.
   """
   def start_link(opts) do
     name = opts[:name] || __MODULE__
@@ -114,10 +116,19 @@ defmodule ElasticPool do
       worker_args: worker_args
     }
 
+    stats_interval = Keyword.get(opts, :stats_interval, 5000)
+
     children = [
       {ElasticPool.Pool, config},
       {ElasticPool.WorkerManager, config}
     ]
+
+    children =
+      if stats_interval == :never do
+        children
+      else
+        children ++ [{ElasticPool.StatsPoller, pool: name, interval: stats_interval}]
+      end
 
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 0)
   end
