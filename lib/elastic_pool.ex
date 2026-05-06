@@ -1,81 +1,185 @@
 defmodule ElasticPool do
   @moduledoc """
-  Main Supervisor for an ElasticPool instance.
-  """
-  use Supervisor
+  A high-performance, reactive worker pool for Elixir.
 
-  @doc """
-  Starts an elastic pool.
+  ElasticPool uses a macro-based approach to provide compile-time validation,
+  monomorphized data access, and a clean, module-based API.
 
   ## Options
 
-  - `:worker_handler` - worker module implementing `ElasticPool.Worker`
-  - `:worker_args` - arguments passed to each worker
-  - `:initial_workers` - pool size at initialization, defaults to `2`
-  - `:max_workers` - absolute ceiling on the number of workers that may be
+  The following options can be provided either at compile-time (in the `use` macro)
+  or overridden at runtime (in `start_link/1`).
+
+  - `:worker_handler` - (Required) Worker module implementing `ElasticPool.Worker`.
+  - `:worker_args` - Arguments passed to each worker. Defaults to `[]`.
+  - `:initial_workers` - Pool size at initialization. Defaults to `2`.
+  - `:max_workers` - Absolute ceiling on the number of workers that may be
     started, regardless of scaling policy. Defaults to `:infinity`.
     Use `max_workers` when each worker represents a specific and finite
     resource that should not be over-committed, such as a physical CPU core,
-    a fixed-size license pool, or some other hard capacity limit that should
-    never be exceeded.
-  - `:scaling_policy` - scaling policy module, defaults to
-    `ElasticPool.Policies.Threshold`
-  - `:scaling_policy_opts` - options passed to the scaling policy
-  - `:start_timeout` - time in ms to wait for initial workers to come up, defaults
-    to `5000`
-  - `:max_restarts` - maximum number of worker crashes allowed in `:max_period`,
-    defaults to `3`
-  - `:max_period` - time window for `:max_restarts` in seconds, defaults to `5`
-  - `:stats_interval` - time in ms for periodic status telemetry heartbeats.
+    a fixed-size license pool, or some other hard capacity limit.
+  - `:scaling_policy` - Scaling policy module. Defaults to
+    `ElasticPool.Policies.Threshold`.
+  - `:scaling_policy_opts` - Options passed to the scaling policy.
+  - `:start_timeout` - Time in ms to wait for initial workers to come up.
+    Defaults to `5000`.
+  - `:max_restarts` - Maximum number of worker crashes allowed in `:max_period`.
+    Defaults to `3`.
+  - `:max_period` - Time window for `:max_restarts` in seconds. Defaults to `5`.
+  - `:stats_interval` - Time in ms for periodic status telemetry heartbeats.
     Set to `:never` to disable. Defaults to `5000`.
+
+  ## Example
+
+      defmodule MyPool do
+        use ElasticPool,
+          worker_handler: MyWorker,
+          initial_workers: 5,
+          max_workers: 10,
+          scaling_policy_opts: [available_reserve: 2]
+      end
+
+      # Start it in your supervision tree:
+      {MyPool, []}
+
+      # Perform work:
+      MyPool.call(:do_something)
   """
-  def start_link(opts) do
-    name = opts[:name] || __MODULE__
-    initial = opts[:initial_workers] || 2
-    timeout = opts[:start_timeout] || 5000
 
-    case Supervisor.start_link(__MODULE__, opts, name: name) do
-      {:ok, pid} ->
-        manager_proc = Module.concat(name, WorkerManager)
+  @doc """
+  Defines a specialized pool module.
 
-        try do
-          case ElasticPool.WorkerManager.wait_for_ready(manager_proc, initial, timeout) do
-            :ok ->
-              {:ok, pid}
+  Using this macro performs compile-time validation of the worker and policy
+  and generates a specialized supervisor and API for the pool.
 
-            {:error, reason} ->
-              if Process.alive?(pid), do: Supervisor.stop(pid)
-              {:error, reason}
-          end
-        catch
-          :exit, _ ->
-            {:error, :supervisor_died}
+  See the module documentation for the full list of available options.
+  """
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
+      use Supervisor
+      require ElasticPool
+
+      # Perform compile-time validation of the provided modules.
+      ElasticPool.validate_config!(__MODULE__, opts)
+
+      @doc """
+      Starts the pool supervisor.
+
+      Inherits all options from the `use ElasticPool` definition, which can
+      be overridden here. By default, the pool instance is named after the module.
+      """
+      def start_link(runtime_opts \\ []) do
+        full_opts = Keyword.merge(unquote(opts), runtime_opts)
+        name = full_opts[:name] || __MODULE__
+        initial = full_opts[:initial_workers] || 2
+        timeout = full_opts[:start_timeout] || 5000
+
+        case Supervisor.start_link(__MODULE__, full_opts, name: name) do
+          {:ok, pid} ->
+            manager_proc = Module.concat(name, WorkerManager)
+
+            try do
+              case ElasticPool.WorkerManager.wait_for_ready(manager_proc, initial, timeout) do
+                :ok ->
+                  {:ok, pid}
+
+                {:error, reason} ->
+                  if Process.alive?(pid), do: Supervisor.stop(pid)
+                  {:error, reason}
+              end
+            catch
+              :exit, _ ->
+                {:error, :supervisor_died}
+            end
+
+          error ->
+            error
         end
+      end
 
-      error ->
-        error
+      @impl true
+      def init(opts) do
+        ElasticPool.init_pool(opts[:name] || __MODULE__, opts)
+      end
+
+      @doc """
+      Performs a synchronous call to a worker in this pool.
+      Defaults to the instance named after the module.
+      """
+      def call(request, timeout \\ 30_000) do
+        ElasticPool.call(__MODULE__, request, timeout)
+      end
+
+      @doc """
+      Performs a synchronous call to a specific named instance of this pool.
+      """
+      def call(name, request, timeout) do
+        ElasticPool.call(name, request, timeout)
+      end
+
+      @doc """
+      Returns the 'Target' number of workers the pool intends to have.
+      Identity: `starting_workers = target_workers - active_workers` (may be negative if the pool is about to scale down).
+      """
+      def target_workers(name \\ __MODULE__), do: ElasticPool.target_workers(name)
+
+      @doc """
+      Returns the number of workers that are currently alive and monitored by the pool.
+      """
+      def active_workers(name \\ __MODULE__), do: ElasticPool.active_workers(name)
+
+      @doc """
+      Returns the number of workers that are currently idle and ready to take work.
+      Identity: `busy_workers = active_workers - available_workers`
+      """
+      def available_workers(name \\ __MODULE__), do: ElasticPool.available_workers(name)
+
+      @doc """
+      Returns the highest number of concurrent active workers that have existed since the pool started.
+      """
+      def peak_workers(name \\ __MODULE__), do: ElasticPool.peak_workers(name)
+
+      @doc """
+      Returns the number of clients currently waiting in the checkout queue.
+      """
+      def waiting_clients(name \\ __MODULE__), do: ElasticPool.waiting_clients(name)
+
+      @doc """
+      Returns the cumulative number of checkout requests made to the pool since it started.
+      """
+      def request_count(name \\ __MODULE__), do: ElasticPool.request_count(name)
+
+      def child_spec(opts) do
+        %{
+          id: __MODULE__,
+          start: {__MODULE__, :start_link, [opts]},
+          type: :supervisor
+        }
+      end
     end
   end
 
-  def call(pool_name \\ __MODULE__, request, timeout \\ 30_000) do
-    pool_proc = Module.concat(pool_name, Pool)
+  # --- Internal Helpers ---
 
-    case ElasticPool.Pool.checkout(pool_proc, timeout) do
-      {:ok, _ref, worker_pid} ->
-        try do
-          GenServer.call(worker_pid, request, timeout)
-        after
-          ElasticPool.Pool.checkin(pool_proc, worker_pid)
-        end
+  @doc false
+  def validate_config!(module, opts) do
+    worker = opts[:worker_handler] || raise "Missing :worker_handler in #{module}"
+    policy = opts[:scaling_policy] || ElasticPool.Policies.Threshold
 
-      {:error, reason} ->
-        {:error, reason}
+    cond do
+      !Code.ensure_loaded?(worker) ->
+        raise ArgumentError, "Worker module #{inspect(worker)} could not be loaded in #{module}"
+
+      !Code.ensure_loaded?(policy) ->
+        raise ArgumentError, "Scaling policy module #{inspect(policy)} could not be loaded in #{module}"
+
+      true ->
+        :ok
     end
   end
 
-  @impl true
-  def init(opts) do
-    name = opts[:name] || __MODULE__
+  @doc false
+  def init_pool(name, opts) do
     worker_handler = Keyword.fetch!(opts, :worker_handler)
     worker_args = opts[:worker_args] || []
 
@@ -85,18 +189,17 @@ defmodule ElasticPool do
 
     if :ets.whereis(stats_table) == :undefined do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
-
-      :ets.insert(stats_table,
-        target_workers: opts[:initial_workers] || 2,
-        active_workers: 0,
-        available_workers: 0,
-        peak_workers: 0,
-        waiting_clients: 0,
-        request_count: 0
-      )
     end
 
-    # Group the configuration
+    :ets.insert(stats_table, [
+      {:target_workers, opts[:initial_workers] || 2},
+      {:active_workers, 0},
+      {:available_workers, 0},
+      {:peak_workers, 0},
+      {:waiting_clients, 0},
+      {:request_count, 0}
+    ])
+
     config = %{
       name: name,
       pool: pool_proc,
@@ -106,12 +209,8 @@ defmodule ElasticPool do
       initial_workers: opts[:initial_workers] || 2,
       max_restarts: opts[:max_restarts] || 3,
       max_period: opts[:max_period] || 5,
-
-      # Scaling Policy Configuration
       scaling_policy: opts[:scaling_policy] || ElasticPool.Policies.Threshold,
       scaling_policy_opts: opts[:scaling_policy_opts] || [],
-
-      # Worker Configuration
       worker_handler: worker_handler,
       worker_args: worker_args
     }
@@ -131,6 +230,25 @@ defmodule ElasticPool do
       end
 
     Supervisor.init(children, strategy: :one_for_all, max_restarts: 0)
+  end
+
+  @doc """
+  Performs a synchronous call to a worker in a named pool.
+  """
+  def call(pool_name, request, timeout \\ 30_000) do
+    pool_proc = Module.concat(pool_name, Pool)
+
+    case ElasticPool.Pool.checkout(pool_proc, timeout) do
+      {:ok, _ref, worker_pid} ->
+        try do
+          GenServer.call(worker_pid, request, timeout)
+        after
+          ElasticPool.Pool.checkin(pool_proc, worker_pid)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   # --- High Performance Accessors ---
@@ -167,10 +285,15 @@ defmodule ElasticPool do
   """
   def request_count(name), do: get_stat(name, :request_count)
 
-  defp get_stat(name, key) do
-    stats_table = Module.concat(name, Stats)
-    :ets.lookup_element(stats_table, key, 2)
+  @doc false
+  def get_stat_from_table(table, key) do
+    :ets.lookup_element(table, key, 2)
   rescue
     ArgumentError -> 0
+  end
+
+  defp get_stat(name, key) do
+    stats_table = Module.concat(name, Stats)
+    get_stat_from_table(stats_table, key)
   end
 end

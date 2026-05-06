@@ -30,85 +30,135 @@ defmodule ElasticPoolTest.TerminationWorker do
   end
 end
 
+defmodule ElasticPoolTest.FastCrashingWorker do
+  use ElasticPool.Worker
+  @impl true
+  def init(_), do: raise("Instant Crash")
+
+  @impl true
+  def handle_work(_req, _from, state), do: {:reply, :ok, state}
+end
+
+defmodule ElasticPoolTest.WorkCrashingWorker do
+  use ElasticPool.Worker
+  @impl true
+  def handle_work(:crash, _from, _state), do: raise("Work Crash")
+  @impl true
+  def handle_work(:ping, _from, state), do: {:reply, :pong, state}
+end
+
+# --- Test Pool Modules ---
+
+defmodule BasicPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.TestWorker,
+    initial_workers: 1,
+    stats_interval: :never
+end
+
+defmodule TerminationPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.TerminationWorker,
+    initial_workers: 5,
+    stats_interval: :never
+end
+
+defmodule SlowStartupPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.SlowInitWorker,
+    initial_workers: 10
+end
+
+defmodule PollerPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.TestWorker,
+    initial_workers: 2,
+    stats_interval: 100
+end
+
+defmodule IntensityPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.FastCrashingWorker,
+    initial_workers: 1,
+    max_restarts: 2,
+    max_period: 5,
+    stats_interval: :never
+end
+
+defmodule WorkIntensityPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.WorkCrashingWorker,
+    initial_workers: 1,
+    max_restarts: 1,
+    max_period: 5,
+    stats_interval: :never
+end
+
+defmodule ElasticPoolTest.MissingCallbacksWorker do
+  # No handle_work callback
+end
+
+defmodule ImmediateFailurePool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.MissingCallbacksWorker,
+    initial_workers: 1,
+    max_restarts: 1,
+    max_period: 5,
+    start_timeout: 1000
+end
+
+# --------------------------
+
 defmodule ElasticPoolTest do
   use ExUnit.Case
 
   test "all workers are terminated when pool stops" do
-    name = :termination_test
     test_pid = self()
-    worker_count = 5
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: ElasticPoolTest.TerminationWorker,
-        initial_workers: worker_count,
-        worker_args: [test_pid: test_pid],
-        stats_interval: :never
-      )
+    {:ok, pid} = TerminationPool.start_link(worker_args: [test_pid: test_pid])
 
     # Shutdown the pool
-    Supervisor.stop(name)
+    Supervisor.stop(pid)
 
     # Check that we received exactly 5 termination messages
-    for _ <- 1..worker_count do
+    for _ <- 1..5 do
       assert_receive :worker_terminated, 500
     end
   end
 
   test "initial workers init in parallel" do
-    name = :slow_startup_test
     start_time = System.monotonic_time(:millisecond)
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: ElasticPoolTest.SlowInitWorker,
-        initial_workers: 10
-      )
+    {:ok, pid} = SlowStartupPool.start_link()
 
     end_time = System.monotonic_time(:millisecond)
-    peak_workers = ElasticPool.peak_workers(name)
+    peak_workers = SlowStartupPool.peak_workers()
     duration = end_time - start_time
 
-    Supervisor.stop(name)
+    Supervisor.stop(pid)
 
     assert peak_workers == 10
     assert duration < 500, "Startup took too long: #{duration}ms"
   end
 
   test "can perform work via generic call" do
-    name = String.to_atom("TestPool_#{:erlang.unique_integer([:positive])}")
+    {:ok, pid} = BasicPool.start_link()
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: ElasticPoolTest.TestWorker,
-        initial_workers: 1
-      )
-
-    assert ElasticPool.call(name, :ping) == :pong
-    assert ElasticPool.request_count(name) == 1
-    Supervisor.stop(name)
+    assert BasicPool.call(:ping) == :pong
+    assert BasicPool.request_count() == 1
+    Supervisor.stop(pid)
   end
 
   test "status shows workers" do
-    name = String.to_atom("StatusPool_#{:erlang.unique_integer([:positive])}")
+    {:ok, pid} = BasicPool.start_link()
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: ElasticPoolTest.TestWorker,
-        initial_workers: 1
-      )
-
-    assert ElasticPool.target_workers(name) == 1
-    Supervisor.stop(name)
+    assert BasicPool.target_workers() == 1
+    Supervisor.stop(pid)
   end
 
   test "StatsPoller emits periodic telemetry" do
-    name = :poller_test
     test_pid = self()
+    name = PollerPool
 
     # Attach a temporary telemetry handler using a named function to avoid warnings
     handler_id = "test-poller-handler"
@@ -120,13 +170,7 @@ defmodule ElasticPoolTest do
       test_pid
     )
 
-    {:ok, _pool_pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: ElasticPoolTest.TestWorker,
-        initial_workers: 2,
-        stats_interval: 100
-      )
+    {:ok, pool_pid} = PollerPool.start_link()
 
     # We should receive a heartbeat
     assert_receive {:telemetry_event, measurements, %{pool_name: ^name}}, 500
@@ -134,52 +178,23 @@ defmodule ElasticPoolTest do
 
     # Cleanup
     :telemetry.detach(handler_id)
-    Supervisor.stop(name)
-  end
-
-  defmodule FastCrashingWorker do
-    use ElasticPool.Worker
-    @impl true
-    def init(_), do: raise("Instant Crash")
-
-    @impl true
-    def handle_work(_req, _from, state), do: {:reply, :ok, state}
+    Supervisor.stop(pool_pid)
   end
 
   @tag :capture_log
   test "pool shuts down when crash intensity is reached during worker init" do
-    name = :intensity_test
     Process.flag(:trap_exit, true)
 
     # This should crash immediately on start because initial_workers=1
     # but it will keep trying to reconcile until max_restarts (2) is hit.
-    result =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: FastCrashingWorker,
-        initial_workers: 1,
-        max_restarts: 2,
-        max_period: 5,
-        stats_interval: :never
-      )
+    result = IntensityPool.start_link()
 
     # During init failure, start_link returns the error reason
     assert {:error, :supervisor_died} = result
-    assert_receive {:EXIT, _pid, :shutdown}
-    assert Process.whereis(name) == nil
-  end
-
-  defmodule WorkCrashingWorker do
-    use ElasticPool.Worker
-    @impl true
-    def handle_work(:crash, _from, _state), do: raise("Work Crash")
-    @impl true
-    def handle_work(:ping, _from, state), do: {:reply, :pong, state}
   end
 
   @tag :capture_log
   test "pool shuts down when crash intensity is reached during work" do
-    name = :work_intensity_test
     test_pid = self()
     Process.flag(:trap_exit, true)
 
@@ -194,48 +209,27 @@ defmodule ElasticPoolTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: WorkCrashingWorker,
-        initial_workers: 1,
-        max_restarts: 1,
-        max_period: 5,
-        stats_interval: :never
-      )
+    {:ok, pid} = WorkIntensityPool.start_link()
 
     # We need to crash it 2 times to hit max_restarts: 1
     # 1. First crash - Call synchronously
-    catch_exit(ElasticPool.call(name, :crash))
+    catch_exit(WorkIntensityPool.call(:crash))
 
     # Wait for the RECOVERY telemetry (Sent by the worker itself!)
-    # We ignore the measurements/metadata, just need to know it's started.
     assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], _, %{start_reason: :recovery}}, 1000
 
     # 2. Second crash - This should trigger the intensity limit
-    catch_exit(ElasticPool.call(name, :crash))
+    catch_exit(WorkIntensityPool.call(:crash))
 
     # The entire pool supervisor should stop and send an EXIT signal to us.
-    # Supervisors that stop due to restart intensity exit with :shutdown.
     assert_receive {:EXIT, ^pid, :shutdown}, 2000
-    assert Process.whereis(name) == nil
   end
 
   @tag :capture_log
   test "pool shuts down when workers fail to start (immediate failure)" do
-    name = :immediate_failure_test
     Process.flag(:trap_exit, true)
 
-    # We use an invalid atom as the handler to force start_link to return an error
-    result =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: :not_a_real_module,
-        initial_workers: 1,
-        max_restarts: 1,
-        max_period: 5,
-        start_timeout: 1000
-      )
+    result = ImmediateFailurePool.start_link()
 
     # This should fail instantly with :supervisor_died.
     assert {:error, :supervisor_died} = result

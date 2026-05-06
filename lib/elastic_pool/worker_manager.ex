@@ -10,6 +10,7 @@ defmodule ElasticPool.WorkerManager do
   # - Acting as the direct supervisor for all workers by trapping exits.
 
   use GenServer
+  require Logger
 
   def start_link(config) do
     GenServer.start_link(__MODULE__, config, name: config.manager)
@@ -71,7 +72,9 @@ defmodule ElasticPool.WorkerManager do
 
   @impl true
   def handle_call({:wait_for_ready, count}, from, state) do
-    if ElasticPool.active_workers(state.pool_name) >= count do
+    current_count = ElasticPool.active_workers(state.pool_name)
+
+    if current_count >= count do
       {:reply, :ok, state}
     else
       {:noreply, %{state | waiting_readiness: [{from, count} | state.waiting_readiness]}}
@@ -101,8 +104,6 @@ defmodule ElasticPool.WorkerManager do
   @impl true
   def handle_cast({:worker_ready, pid}, state) do
     # 1. Register the worker with the Pool synchronously
-    # This ensures the worker is in the 'available' list and reflected in ETS
-    # before we notify any waiters.
     case ElasticPool.Pool.add_worker(state.config.pool, pid) do
       :ok ->
         current_count = ElasticPool.active_workers(state.pool_name)
@@ -173,26 +174,21 @@ defmodule ElasticPool.WorkerManager do
     needed = target - active_count
 
     if needed > 0 do
-      # If no reason was explicitly provided, infer it from current pool state
+      # Calculate the start reason for this batch once
       start_reason =
         reason || (if active_count == 0, do: :initial, else: :scale_up)
 
-      Enum.reduce_while(1..needed, {:ok, state}, fn _, {:ok, acc} ->
-        case start_worker(acc.config, start_reason) do
-          {:ok, pid} ->
-            {:cont, {:ok, %{acc | workers: MapSet.put(acc.workers, pid)}}}
+      case start_worker(state.config, start_reason) do
+        {:ok, pid} ->
+          reconcile(target, %{state | workers: MapSet.put(state.workers, pid)}, start_reason)
 
-          _ ->
-            case check_intensity(acc) do
-              {:ok, new_state} -> {:cont, {:ok, new_state}}
-              {:error, :too_many_crashes} -> {:halt, {:error, :too_many_crashes}}
-            end
-        end
-      end)
+        _ ->
+          case check_intensity(state) do
+            {:ok, new_state} -> reconcile(target, new_state, start_reason)
+            {:error, :too_many_crashes} -> {:error, :too_many_crashes}
+          end
+      end
     else
-      # Scale-down is handled by the Pool calling stop_worker/2 when
-      # workers check in, or we could proactively kill idle workers here.
-      # For now, we follow the "drain" strategy where Pool dismisses them.
       {:ok, state}
     end
   end

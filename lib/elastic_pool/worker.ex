@@ -14,7 +14,7 @@ defmodule ElasticPool.Worker do
       end
   """
 
-  @callback init(args :: term()) :: state :: term()
+  @callback init(args :: term()) :: state :: term() | {:stop, reason :: term()}
   @callback handle_work(request :: term(), from :: term(), state :: term()) ::
               {:reply, reply :: term(), new_state :: term()}
               | {:noreply, new_state :: term()}
@@ -43,10 +43,17 @@ defmodule ElasticPool.Worker do
 
   @impl true
   def init(args) do
-    # Trap exits so terminate/2 is called even when the supervisor shuts us down
-    Process.flag(:trap_exit, true)
-    # Return immediately so the supervisor can start more workers in parallel
-    {:ok, args, {:continue, :post_init}}
+    handler = Keyword.fetch!(args, :handler)
+
+    # Fail fast if the handler is not a valid module or doesn't implement the worker behavior
+    if !Code.ensure_loaded?(handler) or !function_exported?(handler, :handle_work, 3) do
+      {:stop, {:invalid_worker_handler, handler}}
+    else
+      # Trap exits so terminate/2 is called even when the supervisor shuts us down
+      Process.flag(:trap_exit, true)
+      # Return immediately so the supervisor can start more workers in parallel
+      {:ok, args, {:continue, :post_init}}
+    end
   end
 
   @impl true
@@ -56,28 +63,40 @@ defmodule ElasticPool.Worker do
     manager = Keyword.fetch!(args, :manager)
     start_reason = Keyword.get(args, :start_reason, :unknown)
 
-    handler_state = if function_exported?(handler, :init, 1), do: handler.init(args), else: args
+    case init_handler(handler, args) do
+      {:stop, reason} ->
+        {:stop, reason, args}
 
-    # Notify that this worker is ready to take work
-    ElasticPool.WorkerManager.worker_ready(manager, self())
+      handler_state ->
+        # Notify that this worker is ready to take work
+        ElasticPool.WorkerManager.worker_ready(manager, self())
 
-    :telemetry.execute(
-      [:elastic_pool, :worker, :start],
-      %{count: 1},
-      %{
-        pool: pool,
-        handler: handler,
-        start_reason: start_reason
-      }
-    )
+        :telemetry.execute(
+          [:elastic_pool, :worker, :start],
+          %{count: 1},
+          %{
+            pool: pool,
+            handler: handler,
+            start_reason: start_reason
+          }
+        )
 
-    {:noreply,
-     %{
-       handler: handler,
-       handler_state: handler_state,
-       pool: pool,
-       start_reason: start_reason
-     }}
+        {:noreply,
+         %{
+           handler: handler,
+           handler_state: handler_state,
+           pool: pool,
+           start_reason: start_reason
+         }}
+    end
+  end
+
+  defp init_handler(handler, args) do
+    if function_exported?(handler, :init, 1) do
+      handler.init(args)
+    else
+      args
+    end
   end
 
   @impl true

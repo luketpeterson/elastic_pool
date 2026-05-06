@@ -57,162 +57,21 @@ defmodule ElasticPool.IntegrationTest do
     end
   end
 
-  test "scaling up and down based on request count with lifecycle tracking" do
-    name = :scheduled_scaling_test
-    test_pid = self()
+  # --- Test Pool Modules ---
 
-    # --- Setup Telemetry Tracking ---
-    handler_id = "telemetry-integration-test-handler"
-    events = [
-      [:elastic_pool, :worker, :start],
-      [:elastic_pool, :worker, :stop]
-    ]
-    :telemetry.attach_many(handler_id, events, &__MODULE__.handle_telemetry/4, %{test_pid: test_pid})
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-    # -------------------------------
-
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: TrackingWorker,
-        initial_workers: 2,
-        scaling_policy: ScheduledPolicy,
-        worker_args: [test_pid: test_pid]
-      )
-
-    # 1. Initial State: 2 workers
-    assert ElasticPool.target_workers(name) == 2
-    assert ElasticPool.active_workers(name) == 2
-    assert ElasticPool.available_workers(name) == 2
-
-    for _ <- 1..2 do
-      assert_receive {:worker_init, _pid}
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
-    end
-
-    refute_receive {:worker_init, _}, 100
-
-    # 2. Trigger Scale-Up: Send 100 requests
-    for _ <- 1..100 do
-      assert ElasticPool.call(name, :ping) == :pong
-    end
-
-    # Wait for policy to hit target
-    wait_for_target(name, 20)
-    # Wait for all 20 workers to be active AND idle
-    wait_for_idle(name)
-
-    assert ElasticPool.active_workers(name) == 20
-    assert ElasticPool.available_workers(name) == 20
-
-    # Check inits (exactly 18 new)
-    for _ <- 1..18 do
-      assert_receive {:worker_init, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :scale_up}}
-    end
-
-    refute_receive {:worker_init, _}, 100
-
-    # 3. Trigger Scale-Down: Send 100 more requests (Total 200)
-    for _ <- 1..100 do
-      assert ElasticPool.call(name, :ping) == :pong
-    end
-
-    # Wait for policy to hit target
-    wait_for_target(name, 5)
-    # Wait for pool to settle at 5 workers and be idle
-    wait_for_idle(name)
-
-    assert ElasticPool.active_workers(name) == 5
-    assert ElasticPool.available_workers(name) == 5
-
-    # Check for exactly 15 termination messages from scale-down
-    for _ <- 1..15 do
-      assert_receive {:worker_terminated, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :scale_down}}
-    end
-
-    refute_receive {:worker_terminated, _}, 100
-
-    # 4. Global Termination: Stop the whole pool
-    Supervisor.stop(name)
-
-    # The remaining 5 workers should all terminate with :shutdown reason
-    for _ <- 1..5 do
-      assert_receive {:worker_terminated, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :shutdown}}
-    end
-
-    refute_receive {:worker_terminated, _}, 100
+  defmodule ScheduledPool do
+    use ElasticPool,
+      worker_handler: TrackingWorker,
+      initial_workers: 2,
+      scaling_policy: ScheduledPolicy
   end
 
-  test "WorkerManager survives scale-down" do
-    name = :manager_survival_test
-    test_pid = self()
-
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: TrackingWorker,
-        initial_workers: 10,
-        max_workers: 10,
-        scaling_policy: ScheduledPolicy,
-        worker_args: [test_pid: test_pid]
-      )
-
-    manager_name = Module.concat(name, WorkerManager)
-    manager_pid = Process.whereis(manager_name)
-    assert is_pid(manager_pid)
-
-    # Monitor the manager
-    ref = Process.monitor(manager_pid)
-
-    # Trigger Scale-Down: Send 200 requests to hit the 5 worker target
-    for _ <- 1..200 do
-      ElasticPool.call(name, :ping)
-    end
-
-    # Wait for target and idle
-    wait_for_target(name, 5)
-    wait_for_idle(name)
-
-    # If the manager crashed, we would receive a :DOWN message
-    refute_receive {:DOWN, ^ref, :process, ^manager_pid, _reason},
-                   1000,
-                   "WorkerManager crashed during scale-down! This would mean our merged supervisor/manager is unstable."
-
-    assert ElasticPool.active_workers(name) == 5
-
-    Supervisor.stop(name)
-  end
-
-  test "WorkerManager enforces max_workers as a hard cap" do
-    name = :max_worker_cap_test
-    test_pid = self()
-
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: TrackingWorker,
-        initial_workers: 1,
-        max_workers: 3,
-        scaling_policy: OverTargetPolicy,
-        worker_args: [test_pid: test_pid]
-      )
-
-    assert_receive {:worker_init, _pid}, 1000
-
-    for _ <- 1..10 do
-      assert ElasticPool.call(name, :ping) == :pong
-    end
-
-    wait_for_idle(name)
-
-    assert ElasticPool.active_workers(name) == 3
-    assert ElasticPool.available_workers(name) == 3
-
-    Supervisor.stop(name)
+  defmodule OverTargetPool do
+    use ElasticPool,
+      worker_handler: TrackingWorker,
+      initial_workers: 1,
+      max_workers: 3,
+      scaling_policy: OverTargetPolicy
   end
 
   defmodule TrackingCrashingWorker do
@@ -235,10 +94,153 @@ defmodule ElasticPool.IntegrationTest do
     end
   end
 
+  defmodule CrashRecoveryPool do
+    use ElasticPool,
+      worker_handler: TrackingCrashingWorker,
+      initial_workers: 1
+  end
+
+  # --------------------------
+
+  test "scaling up and down based on request count with lifecycle tracking" do
+    test_pid = self()
+    name = ScheduledPool
+
+    # --- Setup Telemetry Tracking ---
+    handler_id = "telemetry-integration-test-handler"
+    events = [
+      [:elastic_pool, :worker, :start],
+      [:elastic_pool, :worker, :stop]
+    ]
+    :telemetry.attach_many(handler_id, events, &__MODULE__.handle_telemetry/4, %{test_pid: test_pid})
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    # -------------------------------
+
+    {:ok, pid} = ScheduledPool.start_link(worker_args: [test_pid: test_pid])
+
+    # 1. Initial State: 2 workers
+    assert ScheduledPool.target_workers() == 2
+    assert ScheduledPool.active_workers() == 2
+    assert ScheduledPool.available_workers() == 2
+
+    for _ <- 1..2 do
+      assert_receive {:worker_init, _pid}
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
+    end
+
+    refute_receive {:worker_init, _}, 100
+
+    # 2. Trigger Scale-Up: Send 100 requests
+    for _ <- 1..100 do
+      assert ScheduledPool.call(:ping) == :pong
+    end
+
+    # Wait for policy to hit target
+    wait_for_target(name, 20)
+    # Wait for all 20 workers to be active AND idle
+    wait_for_idle(name)
+
+    assert ScheduledPool.active_workers() == 20
+    assert ScheduledPool.available_workers() == 20
+
+    # Check inits (exactly 18 new)
+    for _ <- 1..18 do
+      assert_receive {:worker_init, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :scale_up}}
+    end
+
+    refute_receive {:worker_init, _}, 100
+
+    # 3. Trigger Scale-Down: Send 100 more requests (Total 200)
+    for _ <- 1..100 do
+      assert ScheduledPool.call(:ping) == :pong
+    end
+
+    # Wait for policy to hit target
+    wait_for_target(name, 5)
+    # Wait for pool to settle at 5 workers and be idle
+    wait_for_idle(name)
+
+    assert ScheduledPool.active_workers() == 5
+    assert ScheduledPool.available_workers() == 5
+
+    # Check for exactly 15 termination messages from scale-down
+    for _ <- 1..15 do
+      assert_receive {:worker_terminated, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :scale_down}}
+    end
+
+    refute_receive {:worker_terminated, _}, 100
+
+    # 4. Global Termination: Stop the whole pool
+    Supervisor.stop(pid)
+
+    # The remaining 5 workers should all terminate with :shutdown reason
+    for _ <- 1..5 do
+      assert_receive {:worker_terminated, _pid}, 1000
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :shutdown}}
+    end
+
+    refute_receive {:worker_terminated, _}, 100
+  end
+
+  test "WorkerManager survives scale-down" do
+    test_pid = self()
+    name = ScheduledPool
+
+    {:ok, pid} = ScheduledPool.start_link(initial_workers: 10, max_workers: 10, worker_args: [test_pid: test_pid])
+
+    manager_name = Module.concat(name, WorkerManager)
+    manager_pid = Process.whereis(manager_name)
+    assert is_pid(manager_pid)
+
+    # Monitor the manager
+    ref = Process.monitor(manager_pid)
+
+    # Trigger Scale-Down: Send 200 requests to hit the 5 worker target
+    for _ <- 1..200 do
+      ScheduledPool.call(:ping)
+    end
+
+    # Wait for target and idle
+    wait_for_target(name, 5)
+    wait_for_idle(name)
+
+    # If the manager crashed, we would receive a :DOWN message
+    refute_receive {:DOWN, ^ref, :process, ^manager_pid, _reason},
+                   1000,
+                   "WorkerManager crashed during scale-down!"
+
+    assert ScheduledPool.active_workers() == 5
+
+    Supervisor.stop(pid)
+  end
+
+  test "WorkerManager enforces max_workers as a hard cap" do
+    test_pid = self()
+    name = OverTargetPool
+
+    {:ok, pid} = OverTargetPool.start_link(worker_args: [test_pid: test_pid])
+
+    assert_receive {:worker_init, _pid}, 1000
+
+    for _ <- 1..10 do
+      assert OverTargetPool.call(:ping) == :pong
+    end
+
+    wait_for_idle(name)
+
+    assert OverTargetPool.active_workers() == 3
+    assert OverTargetPool.available_workers() == 3
+
+    Supervisor.stop(pid)
+  end
+
   @tag :capture_log
   test "instant recovery from worker crash" do
-    name = :crash_recovery_test
     test_pid = self()
+    name = CrashRecoveryPool
 
     # --- Setup Telemetry Tracking ---
     handler_id = "telemetry-crash-test-handler"
@@ -253,22 +255,15 @@ defmodule ElasticPool.IntegrationTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, _pid} =
-      ElasticPool.start_link(
-        name: name,
-        worker_handler: TrackingCrashingWorker,
-        initial_workers: 1,
-        worker_args: [test_pid: test_pid]
-      )
+    {:ok, pid} = CrashRecoveryPool.start_link(worker_args: [test_pid: test_pid])
 
     # 1. Capture the initial worker PID and telemetry
     assert_receive {:worker_init, first_pid}
     assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
-    assert ElasticPool.active_workers(name) == 1
+    assert CrashRecoveryPool.active_workers() == 1
 
     # 2. Trigger Crash
-    # Use spawn so the test process doesn't crash from the linked worker
-    spawn(fn -> ElasticPool.call(name, :crash) end)
+    spawn(fn -> CrashRecoveryPool.call(:crash) end)
 
     # 3. Prove Instant Recovery via message passing and telemetry
     assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :crash}}
@@ -279,19 +274,17 @@ defmodule ElasticPool.IntegrationTest do
     assert second_pid != first_pid
 
     # NEW: Deterministic Sync Barrier.
-    # By calling :sys.get_state on the Pool, we guarantee that the
-    # 'worker_ready' cast has been fully processed before we check the stats.
     :sys.get_state(Module.concat(name, Pool))
 
     # 4. Verify the new worker is functional and stats are correct
-    assert ElasticPool.active_workers(name) == 1
-    assert ElasticPool.call(name, :ping) == :pong
+    assert CrashRecoveryPool.active_workers() == 1
+    assert CrashRecoveryPool.call(:ping) == :pong
 
-    Supervisor.stop(name)
+    Supervisor.stop(pid)
   end
 
   defp wait_for_target(name, expected, retries \\ 100) do
-    if ElasticPool.target_workers(name) == expected or retries == 0 do
+    if name.target_workers() == expected or retries == 0 do
       :ok
     else
       Process.sleep(10)
@@ -300,8 +293,8 @@ defmodule ElasticPool.IntegrationTest do
   end
 
   defp wait_for_idle(name, retries \\ 100) do
-    active = ElasticPool.active_workers(name)
-    available = ElasticPool.available_workers(name)
+    active = name.active_workers()
+    available = name.available_workers()
 
     if (active > 0 and active == available) or retries == 0 do
       :ok
