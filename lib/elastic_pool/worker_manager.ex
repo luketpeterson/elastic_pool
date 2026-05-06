@@ -63,8 +63,10 @@ defmodule ElasticPool.WorkerManager do
 
   @impl true
   def handle_continue(:init_workers, state) do
-    new_state = reconcile(state.target, state)
-    {:noreply, new_state}
+    case reconcile(state.target, state) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, :too_many_crashes} -> {:stop, :reached_max_restart_intensity, state}
+    end
   end
 
   @impl true
@@ -79,7 +81,11 @@ defmodule ElasticPool.WorkerManager do
   @impl true
   def handle_cast({:set_target, target}, state) do
     target = min(target, state.config.max_workers)
-    {:noreply, reconcile(target, %{state | target: target})}
+
+    case reconcile(target, %{state | target: target}) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, :too_many_crashes} -> {:stop, :reached_max_restart_intensity, state}
+    end
   end
 
   @impl true
@@ -134,7 +140,10 @@ defmodule ElasticPool.WorkerManager do
         case check_intensity(state) do
           {:ok, new_state} ->
             # Instant Recovery: Reconcile immediately to hit target
-            {:noreply, reconcile(state.target, new_state, :recovery)}
+            case reconcile(state.target, new_state, :recovery) do
+              {:ok, final_state} -> {:noreply, final_state}
+              {:error, :too_many_crashes} -> {:stop, :reached_max_restart_intensity, state}
+            end
 
           {:error, :too_many_crashes} ->
             {:stop, :reached_max_restart_intensity, state}
@@ -168,20 +177,23 @@ defmodule ElasticPool.WorkerManager do
       start_reason =
         reason || (if active_count == 0, do: :initial, else: :scale_up)
 
-      new_workers =
-        Enum.reduce(1..needed, state.workers, fn _, acc ->
-          case start_worker(state.config, start_reason) do
-            {:ok, pid} -> MapSet.put(acc, pid)
-            _ -> acc
-          end
-        end)
+      Enum.reduce_while(1..needed, {:ok, state}, fn _, {:ok, acc} ->
+        case start_worker(acc.config, start_reason) do
+          {:ok, pid} ->
+            {:cont, {:ok, %{acc | workers: MapSet.put(acc.workers, pid)}}}
 
-      %{state | workers: new_workers}
+          _ ->
+            case check_intensity(acc) do
+              {:ok, new_state} -> {:cont, {:ok, new_state}}
+              {:error, :too_many_crashes} -> {:halt, {:error, :too_many_crashes}}
+            end
+        end
+      end)
     else
       # Scale-down is handled by the Pool calling stop_worker/2 when
       # workers check in, or we could proactively kill idle workers here.
       # For now, we follow the "drain" strategy where Pool dismisses them.
-      state
+      {:ok, state}
     end
   end
 

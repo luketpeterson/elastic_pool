@@ -237,10 +237,8 @@ defmodule ElasticPoolTest do
         start_timeout: 1000
       )
 
-    # CURRENT BEHAVIOR: This will take 1 second and return :timeout because
-    # the manager isn't counting the start failure as a crash.
-    # DESIRED BEHAVIOR: This should fail instantly with :supervisor_died.
-    assert {:error, :timeout} = result
+    # This should fail instantly with :supervisor_died.
+    assert {:error, :supervisor_died} = result
   end
 
   def handle_telemetry(name, measurements, metadata, config_or_pid) do
