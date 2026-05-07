@@ -7,7 +7,8 @@ defmodule ElasticPool.MixProject do
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      docs: docs()
     ]
   end
 
@@ -22,6 +23,13 @@ defmodule ElasticPool.MixProject do
       # {:poolboy, "~> 1.5", runtime: false},  # Uncomment to run the benchmark
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"]
     ]
   end
 end

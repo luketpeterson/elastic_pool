@@ -1,10 +1,6 @@
 defmodule ElasticPool do
   @moduledoc """
-  A worker pool for Elixir, designed to manage finite costly resources with
-  substantial startup latency.
-
-  ElasticPool uses a macro-based approach to provide compile-time validation,
-  monomorphized data access, and a module-based API.
+  The top-level pool object
 
   ## Configuration
 
