@@ -7,6 +7,24 @@ It uses a module-based API to configure the scaling policy, using one of the sup
 
 It uses a macro-based approach to provide compile-time validation and monomorphized dispatch.
 
+## Scaling Policies
+
+ElasticPool separates the pool implementation from the scaling decision logic so you can choose the policy that matches your situation.
+
+The right scaling behavior is dictated by considerations like:
+- the level of acceptable job latency
+- the cost of over-provisioning workers
+- the lag needed to spin up a worker
+- etc.
+
+### Provided Policies
+
+- `ElasticPool.Policies.Null` - Keeps the pool size fixed at the initial worker count
+- `ElasticPool.Policies.Threshold` - Reacts to queue pressure and idle worker count using simple thresholds
+- `ElasticPool.Policies.ErlangC` - Uses queueing theory to target a wait-time budget from observed demand
+
+See `ElasticPool.ScalingPolicy` for implementing a custom policy.
+
 ## Configuration
 
 `ElasticPool` separates configuration into compile-time macro options and
@@ -41,9 +59,14 @@ MyPool.call({:echo, "hello"})
 
 ## API Reference
 
+### Core API
+
 - `ElasticPool` - Pool definition macro and runtime pool API
 - `ElasticPool.Worker` - Public behaviour and `use` macro for workers
 - `ElasticPool.ScalingPolicy` - Behaviour for custom scaling policies
+
+### Provided Policies
+
 - `ElasticPool.Policies.ErlangC` - Predictive queueing-theory-based scaling policy
 - `ElasticPool.Policies.Null` - Fixed-target no-op scaling policy
 - `ElasticPool.Policies.Threshold` - Built-in reactive scaling policy

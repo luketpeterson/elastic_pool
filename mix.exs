@@ -29,7 +29,19 @@ defmodule ElasticPool.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md"]
+      extras: ["README.md"],
+      groups_for_modules: [
+        "Core API": [
+          ElasticPool,
+          ElasticPool.Worker,
+          ElasticPool.ScalingPolicy
+        ],
+        "Built-in Policies": [
+          ElasticPool.Policies.Null,
+          ElasticPool.Policies.Threshold,
+          ElasticPool.Policies.ErlangC
+        ]
+      ]
     ]
   end
 end

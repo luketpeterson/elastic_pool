@@ -1,6 +1,23 @@
 defmodule ElasticPool.ScalingPolicy do
   @moduledoc """
   A behaviour for defining stateful scaling policies.
+
+  Scaling policies decide how many workers the pool should target as demand
+  changes.
+
+  Different workloads benefit from different policies:
+
+  - fixed-size pools when each worker represents a scarce resource
+  - reactive policies when simple queue and idle thresholds are sufficient
+  - predictive policies when you want to scale from observed demand and task
+    speed before clients wait too long
+
+  Built-in policies:
+
+  - `ElasticPool.Policies.Null` - keeps the target fixed
+  - `ElasticPool.Policies.Threshold` - reacts to queue pressure and idle reserve
+  - `ElasticPool.Policies.ErlangC` - targets a queue-wait budget using
+    queueing-theory estimates
   """
 
   @type pool_name :: atom()
