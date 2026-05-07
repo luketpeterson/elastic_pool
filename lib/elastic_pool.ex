@@ -40,17 +40,25 @@ defmodule ElasticPool do
 
   ## Example
 
+      defmodule MyApp.Worker do
+        use ElasticPool.Worker
+
+        @impl true
+        def handle_work({:echo, value}, _from, state) do
+          {:reply, value, state}
+        end
+      end
+
       defmodule MyPool do
         use ElasticPool,
-          worker_handler: MyWorker,
-          scaling_policy: MyCustomPolicy
+          worker_handler: MyApp.Worker
       end
 
       # Start it in your supervision tree with runtime options:
       {MyPool, [initial_workers: 5, max_workers: 10]}
 
       # Perform work:
-      MyPool.call(:do_something)
+      MyPool.call({:echo, "hello"})
   """
 
   defmacro __using__(opts) do
