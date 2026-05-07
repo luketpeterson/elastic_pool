@@ -148,8 +148,8 @@ defmodule ElasticPool do
 
       # Specialized Worker Module for this Pool
       defmodule Worker do
-        require ElasticPool.Worker
-        ElasticPool.Worker.__monomorphize__(worker)
+        require ElasticPool.Worker.Runtime
+        ElasticPool.Worker.Runtime.__monomorphize__(worker)
       end
 
       # Specialized WorkerManager Module for this Pool
