@@ -1,6 +1,8 @@
 defmodule ElasticPool.Policies.ErlangC do
   @moduledoc """
-  A predictive scaling policy based on Little's Law and Erlang-C queueing theory.
+  A predictive scaling policy based on Little's Law and
+  [Erlang-C](https://en.wikipedia.org/wiki/Erlang_(unit)#Erlang_C_formula)
+  queueing theory.
 
   This policy estimates arrival rate from checkout activity and service time from
   live completions. It then computes the smallest worker count that should keep
