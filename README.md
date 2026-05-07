@@ -65,7 +65,9 @@ MyPool.call({:echo, "hello"})
 - `ElasticPool.Policies.Null` - Fixed-target no-op scaling policy
 - `ElasticPool.Policies.Threshold` - Built-in reactive scaling policy
 
-## Future Features
+## Future Directions
+
+### Back Pressure
 
 One natural next step is back-pressure driven by `waiting_clients`.
 
@@ -73,3 +75,13 @@ When the pool is saturated and the checkout queue keeps growing, ElasticPool
 could expose configurable overload behavior such as bounded waiting, fast
 failure, or caller-side throttling instead of allowing demand to accumulate
 without bound.
+
+### ETS-based Pool
+
+Instead of a GenServer, the pool (`checkin` / `checkout` functionality) could be implemented entirely using atomics in the ETS, boosting the peak jobs rate by about 10x.  The current GenServer based pool seems to top out at 500K jobs-per-second.  Quick experiments make me think I could get ~5M jobs-per-second with ETS-based atomics.
+
+Implementing this would mean the scaling policy would need to be moved out of the pool process, so it only ran passively with respect to checkout / checkin (i.e. heartbeat) but we could allow every nth checkout to generate an event so the time that the scaling policy took to react to load spikes wouldn't be bad.
+
+### Use defined structs for config
+
+To avoid dumb errors
