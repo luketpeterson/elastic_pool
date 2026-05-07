@@ -58,3 +58,11 @@ end
 # Perform work:
 MyPool.call({:echo, "hello"})
 ```
+
+## API Reference
+
+- `ElasticPool` - Pool definition macro and runtime pool API
+- `ElasticPool.Worker` - Public behaviour and `use` macro for workers
+- `ElasticPool.ScalingPolicy` - Behaviour for custom scaling policies
+- `ElasticPool.Policies.Null` - Fixed-target no-op scaling policy
+- `ElasticPool.Policies.Threshold` - Built-in reactive scaling policy

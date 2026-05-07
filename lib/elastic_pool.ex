@@ -1,60 +1,23 @@
 defmodule ElasticPool do
   @moduledoc """
-  The top-level pool object
+  Pool definition macro and runtime pool API.
 
-  ## Configuration
+  `use ElasticPool` generates a specialized pool module with:
 
-  ElasticPool separates configuration into two phases:
+  - `start_link/1` to start a pool instance
+  - `call/2` and `call/3` to run work against a checked-out worker
+  - stats accessors such as `target_workers/1` and `active_workers/1`
 
-  ### 1. Macro Options (Compile-time)
-  These are passed to `use ElasticPool` and are used to generate specialized
-  code. They are required for monomorphization.
+  Compile-time options belong in `use ElasticPool`:
 
-  - `:worker_handler` - (Required) Worker module implementing `ElasticPool.Worker`.
-  - `:scaling_policy` - Scaling policy module. Defaults to
-    `ElasticPool.Policies.Threshold`.
+  - `:worker_handler` - required worker module implementing `ElasticPool.Worker`
+  - `:scaling_policy` - scaling policy module. Defaults to `ElasticPool.Policies.Threshold`
 
-  ### 2. Runtime Options
-  These are passed to your pool's `start_link/1` function.
+  Runtime options belong in `start_link/1`, such as `:initial_workers`,
+  `:max_workers`, `:worker_args`, and `:stats_interval`.
 
-  - `:name` - name of the pool instance. Defaults to the module name.
-  - `:worker_args` - Arguments passed to the handler module's `init/1` callback. Defaults to `[]`.
-  - `:initial_workers` - Pool size at initialization. Defaults to `2`.
-  - `:max_workers` - Absolute ceiling on the number of workers that may be
-    started, regardless of scaling policy. Defaults to `:infinity`.
-    Use `max_workers` when each worker represents a specific and finite
-    resource that should not be over-committed, such as a physical CPU core,
-    a fixed-size license pool, or some other hard capacity limit.
-  - `:scaling_policy_opts` - Options passed to the scaling policy.
-  - `:start_timeout` - Time in ms to wait for initial workers to come up.
-    Defaults to `5000`.
-  - `:max_restarts` - Maximum number of worker crashes allowed in `:max_period`.
-    Defaults to `3`.
-  - `:max_period` - Time window for `:max_restarts` in seconds. Defaults to `5`.
-  - `:stats_interval` - Time in ms for periodic status telemetry heartbeats.
-    Set to `:never` to disable periodic stats. Defaults to `5000`.
-
-  ## Example
-
-      defmodule MyApp.Worker do
-        use ElasticPool.Worker
-
-        @impl true
-        def handle_work({:echo, value}, _from, state) do
-          {:reply, value, state}
-        end
-      end
-
-      defmodule MyPool do
-        use ElasticPool,
-          worker_handler: MyApp.Worker
-      end
-
-      # Start it in your supervision tree with runtime options:
-      {MyPool, [initial_workers: 5, max_workers: 10]}
-
-      # Perform work:
-      MyPool.call({:echo, "hello"})
+  See the project [README](readme.html) for the full getting-started guide
+  and copy-paste example.
   """
 
   defmacro __using__(opts) do
