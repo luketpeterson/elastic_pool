@@ -97,6 +97,28 @@ defmodule ElasticPool.IntegrationTest do
       worker_handler: TrackingCrashingWorker
   end
 
+  defmodule SlowTrackingWorker do
+    use ElasticPool.Worker
+
+    @impl true
+    def init(args) do
+      send(args[:test_pid], {:worker_init, self()})
+      args
+    end
+
+    @impl true
+    def handle_work({:sleep, duration_ms}, _from, state) do
+      Process.sleep(duration_ms)
+      {:reply, :ok, state}
+    end
+  end
+
+  defmodule ErlangCPool do
+    use ElasticPool,
+      worker_handler: SlowTrackingWorker,
+      scaling_policy: ElasticPool.Policies.ErlangC
+  end
+
   # --------------------------
 
   test "scaling up and down based on request count with lifecycle tracking" do
@@ -260,6 +282,43 @@ defmodule ElasticPool.IntegrationTest do
     Supervisor.stop(pid)
   end
 
+  test "Erlang-C policy scales up under sustained queued demand" do
+    test_pid = self()
+    name = ErlangCPool
+
+    {:ok, pid} =
+      ErlangCPool.start_link(
+        initial_workers: 1,
+        max_workers: 6,
+        stats_interval: :never,
+        worker_args: [test_pid: test_pid],
+        scaling_policy_opts: [
+          target_wait_ms: 20,
+          bootstrap_service_time_ms: 75
+        ]
+      )
+
+    assert_receive {:worker_init, _pid}, 1000
+
+    tasks =
+      for _ <- 1..20 do
+        Task.async(fn ->
+          ErlangCPool.call({:sleep, 75}, 5_000)
+        end)
+      end
+
+    Enum.each(tasks, fn task ->
+      assert Task.await(task, 10_000) == :ok
+    end)
+
+    wait_for_min_peak(name, 2)
+
+    assert ErlangCPool.peak_workers() >= 2
+    assert ErlangCPool.target_workers() >= 2
+
+    Supervisor.stop(pid)
+  end
+
   @tag :capture_log
   test "instant recovery from worker crash" do
     test_pid = self()
@@ -341,6 +400,15 @@ defmodule ElasticPool.IntegrationTest do
     else
       Process.sleep(10)
       wait_for_idle(name, retries - 1)
+    end
+  end
+
+  defp wait_for_min_peak(name, expected, retries \\ 100) do
+    if name.peak_workers() >= expected or retries == 0 do
+      :ok
+    else
+      Process.sleep(10)
+      wait_for_min_peak(name, expected, retries - 1)
     end
   end
 

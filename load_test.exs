@@ -31,7 +31,8 @@ end
 
 defmodule LTPool do
   use ElasticPool,
-    worker_handler: LoadTest.DummyWorker
+    worker_handler: LoadTest.DummyWorker,
+    scaling_policy: ElasticPool.Policies.ErlangC
 end
 
 defmodule LoadTest do
@@ -64,7 +65,10 @@ defmodule LoadTest do
       LTPool.start_link(
         max_workers: 8,
         initial_workers: 2,
-        scaling_policy_opts: [scale_up_threshold: 10]
+        scaling_policy_opts: [
+          target_wait_ms: 20,
+          bootstrap_service_time_ms: work_duration_ms
+        ]
       )
 
     # 2. Perform work using the pool module's call API
