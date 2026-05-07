@@ -9,31 +9,11 @@ It uses a macro-based approach to provide compile-time validation and monomorphi
 
 ## Configuration
 
-`ElasticPool` separates configuration into two phases.
+`ElasticPool` separates configuration into compile-time macro options and
+runtime `start_link/1` options.
 
-### 1. Macro Options
-
-These are passed to `use ElasticPool` and are used to generate specialized
-code.
-
-- `:worker_handler` - Required worker module implementing `ElasticPool.Worker`
-- `:scaling_policy` - Optional scaling policy module. Defaults to
-  `ElasticPool.Policies.Threshold`
-
-### 2. Runtime Options
-
-These are passed to your pool's `start_link/1` function.
-
-- `:name` - Name of the pool instance. Defaults to the module name
-- `:worker_args` - Arguments passed to the worker module's `init/1` callback
-- `:initial_workers` - Pool size at initialization. Defaults to `2`
-- `:max_workers` - Absolute ceiling on the number of workers
-- `:scaling_policy_opts` - Options passed to the scaling policy
-- `:start_timeout` - Time in ms to wait for initial workers to come up
-- `:max_restarts` - Maximum number of worker crashes allowed in `:max_period`
-- `:max_period` - Time window for `:max_restarts` in seconds
-- `:stats_interval` - Time in ms for periodic status telemetry heartbeats.
-  Set to `:never` to disable periodic stats
+See the complete set of [compile-time macro options](ElasticPool.html#module-macro-options)
+and [runtime options](ElasticPool.html#module-runtime-options).
 
 ## Example
 

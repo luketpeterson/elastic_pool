@@ -8,21 +8,37 @@ defmodule ElasticPool do
   - `call/2` and `call/3` to run work against a checked-out worker
   - stats accessors such as `target_workers/1` and `active_workers/1`
 
+  See the project [README](readme.html) for the full getting-started guide
+  and copy-paste example.
+
+  ## Macro Options
+
   Compile-time options belong in `use ElasticPool`:
 
   - `:worker_handler` - required worker module implementing `ElasticPool.Worker`
   - `:scaling_policy` - scaling policy module. Defaults to `ElasticPool.Policies.Threshold`
 
-  Runtime options belong in `start_link/1`, such as `:initial_workers`,
-  `:max_workers`, `:worker_args`, and `:stats_interval`.
+  ## Runtime Options
 
-  See the project [README](readme.html) for the full getting-started guide
-  and copy-paste example.
+  Runtime options belong in `start_link/1`:
+
+  - `:name` - name of the pool instance. Defaults to the module name
+  - `:worker_args` - arguments passed to the handler module's `init/1` callback. Defaults to `[]`
+  - `:initial_workers` - pool size at initialization. Defaults to `2`
+  - `:max_workers` - absolute ceiling on the number of workers that may be started,
+    regardless of scaling policy. Defaults to `:infinity`
+  - `:scaling_policy_opts` - options passed to the scaling policy
+  - `:start_timeout` - time in ms to wait for initial workers to come up. Defaults to `5000`
+  - `:max_restarts` - maximum number of worker crashes allowed in `:max_period`. Defaults to `3`
+  - `:max_period` - time window for `:max_restarts` in seconds. Defaults to `5`
+  - `:stats_interval` - time in ms for periodic status telemetry heartbeats.
+    Set to `:never` to disable periodic stats. Defaults to `5000`
+
   """
 
   @type pool_name :: atom()
-  @type runtime_opts :: keyword()
-  @type macro_opts :: keyword()
+  @typep runtime_opts :: keyword()
+  @typep macro_opts :: keyword()
   @type worker_module :: module()
   @type scaling_policy_module :: module()
 
