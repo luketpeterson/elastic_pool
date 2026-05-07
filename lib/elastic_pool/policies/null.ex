@@ -10,9 +10,16 @@ defmodule ElasticPool.Policies.Null do
   """
 
   @behaviour ElasticPool.ScalingPolicy
+
   @impl true
+  @spec init(map()) :: map()
   def init(_opts), do: %{}
 
   @impl true
+  @spec handle_event(
+          ElasticPool.ScalingPolicy.event(),
+          ElasticPool.ScalingPolicy.pool_name(),
+          map()
+        ) :: {:no_change, map()}
   def handle_event(_event, _pool, state), do: {:no_change, state}
 end

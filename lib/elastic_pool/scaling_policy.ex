@@ -3,6 +3,7 @@ defmodule ElasticPool.ScalingPolicy do
   A behaviour for defining stateful scaling policies.
   """
 
+  @type pool_name :: atom()
   @type event :: :checkout_success | :checkout_failed | :checkin | :worker_ready | :heartbeat
   @type target_decision :: pos_integer() | :no_change
 
@@ -17,7 +18,7 @@ defmodule ElasticPool.ScalingPolicy do
   """
   @callback handle_event(
               event :: event(),
-              pool_name :: atom(),
+              pool_name :: pool_name(),
               state :: term()
             ) :: {target :: target_decision(), new_state :: term()}
 end

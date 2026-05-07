@@ -20,6 +20,12 @@ defmodule ElasticPool do
   and copy-paste example.
   """
 
+  @type pool_name :: atom()
+  @type runtime_opts :: keyword()
+  @type macro_opts :: keyword()
+  @type worker_module :: module()
+  @type scaling_policy_module :: module()
+
   defmacro __using__(opts) do
     # Pre-compute absolute module names to avoid scoping issues during expansion
     worker_mod = Module.concat(__CALLER__.module, Worker)
@@ -52,6 +58,7 @@ defmodule ElasticPool do
       - `:stats_interval` - Telemetry heartbeat interval (ms).
       - `:worker_args` - Arguments passed to the handler module's `init/1` callback.
       """
+      @spec start_link(keyword()) :: Supervisor.on_start()
       def start_link(runtime_opts \\ []) do
         name = runtime_opts[:name] || __MODULE__
         initial = runtime_opts[:initial_workers] || 2
@@ -123,6 +130,7 @@ defmodule ElasticPool do
       Performs a synchronous call to a worker in the default pool.
       Defaults to the instance named after the module.
       """
+      @spec call(term(), timeout()) :: term()
       def call(request, timeout \\ 30_000) do
         ElasticPool.execute_call(@default_name, request, timeout)
       end
@@ -130,6 +138,7 @@ defmodule ElasticPool do
       @doc """
       Performs a synchronous call to a specific named instance of the pool.
       """
+      @spec call(atom(), term(), timeout()) :: term()
       def call(name, request, timeout) do
         ElasticPool.execute_call(name, request, timeout)
       end
@@ -138,34 +147,41 @@ defmodule ElasticPool do
       Returns the 'Target' number of workers the pool intends to have.
       Identity: `starting_workers = target_workers - active_workers` (may be negative if the pool is about to scale down).
       """
+      @spec target_workers(atom()) :: non_neg_integer()
       def target_workers(name \\ @default_name), do: ElasticPool.target_workers(name)
 
       @doc """
       Returns the number of workers that are currently alive and monitored by the pool.
       """
+      @spec active_workers(atom()) :: non_neg_integer()
       def active_workers(name \\ @default_name), do: ElasticPool.active_workers(name)
 
       @doc """
       Returns the number of workers that are currently idle and ready to take work.
       Identity: `busy_workers = active_workers - available_workers`
       """
+      @spec available_workers(atom()) :: non_neg_integer()
       def available_workers(name \\ @default_name), do: ElasticPool.available_workers(name)
 
       @doc """
       Returns the highest number of concurrent active workers that have existed since the pool started.
       """
+      @spec peak_workers(atom()) :: non_neg_integer()
       def peak_workers(name \\ @default_name), do: ElasticPool.peak_workers(name)
 
       @doc """
       Returns the number of clients currently waiting in the checkout queue.
       """
+      @spec waiting_clients(atom()) :: non_neg_integer()
       def waiting_clients(name \\ @default_name), do: ElasticPool.waiting_clients(name)
 
       @doc """
       Returns the cumulative number of checkout requests made to the pool since it started.
       """
+      @spec request_count(atom()) :: non_neg_integer()
       def request_count(name \\ @default_name), do: ElasticPool.request_count(name)
 
+      @spec child_spec(keyword()) :: Supervisor.child_spec()
       def child_spec(opts) do
         %{
           id: __MODULE__,
@@ -229,6 +245,8 @@ defmodule ElasticPool do
   # --- Internal Helpers ---
 
   @doc false
+  @spec validate_macro_config!(module(), macro_opts()) ::
+          {worker_module(), scaling_policy_module()}
   def validate_macro_config!(module, opts) do
     worker = opts[:worker_handler] || raise "Missing :worker_handler in #{module}"
     policy = opts[:scaling_policy] || ElasticPool.Policies.Threshold
@@ -265,9 +283,11 @@ defmodule ElasticPool do
   end
 
   @doc false
+  @spec validate_config!(module(), keyword()) :: :ok
   def validate_config!(_module, _opts), do: :ok
 
   @doc false
+  @spec init_pool(pool_name(), module(), module(), runtime_opts()) :: Supervisor.on_init()
   def init_pool(name, pool_mod, manager_mod, opts) do
     worker_args = opts[:worker_args] || []
 
@@ -329,6 +349,7 @@ defmodule ElasticPool do
   end
 
   @doc false
+  @spec execute_call(pool_name(), term(), timeout()) :: term()
   def execute_call(pool_proc, request, timeout) do
     case ElasticPool.Pool.checkout(pool_proc, timeout) do
       {:ok, _ref, worker_pid} ->

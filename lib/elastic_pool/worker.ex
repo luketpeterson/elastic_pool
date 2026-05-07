@@ -14,11 +14,15 @@ defmodule ElasticPool.Worker do
       end
   """
 
-  @callback init(args :: term()) :: state :: term() | {:stop, reason :: term()}
-  @callback handle_work(request :: term(), from :: term(), state :: term()) ::
-              {:reply, reply :: term(), new_state :: term()}
-              | {:noreply, new_state :: term()}
-  @callback terminate(reason :: term(), state :: term()) :: term()
+  @type worker_state :: term()
+  @type worker_reply ::
+          {:reply, reply :: term(), new_state :: worker_state()}
+          | {:noreply, new_state :: worker_state()}
+
+  @callback init(args :: term()) :: worker_state() | {:stop, reason :: term()}
+  @callback handle_work(request :: term(), from :: GenServer.from(), state :: worker_state()) ::
+              worker_reply()
+  @callback terminate(reason :: term(), state :: worker_state()) :: term()
 
   @optional_callbacks init: 1, terminate: 2
 

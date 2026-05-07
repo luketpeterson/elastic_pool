@@ -13,7 +13,13 @@ defmodule ElasticPool.Policies.Threshold do
   @behaviour ElasticPool.ScalingPolicy
   require ElasticPool
 
+  @type state :: %{
+          available_reserve: non_neg_integer(),
+          scale_up_threshold: non_neg_integer()
+        }
+
   @impl true
+  @spec init(%{policy_opts: keyword(), pool_config: term()}) :: state()
   def init(%{policy_opts: opts, pool_config: _pool}) do
     %{
       available_reserve: opts[:available_reserve] || 4,
@@ -22,6 +28,11 @@ defmodule ElasticPool.Policies.Threshold do
   end
 
   @impl true
+  @spec handle_event(
+          ElasticPool.ScalingPolicy.event(),
+          ElasticPool.ScalingPolicy.pool_name(),
+          state()
+        ) :: {ElasticPool.ScalingPolicy.target_decision(), state()}
   def handle_event(event, pool, state) do
     old_target = ElasticPool.target_workers(pool)
     active = ElasticPool.active_workers(pool)
