@@ -1,9 +1,10 @@
 defmodule ElasticPool do
   @moduledoc """
-  A high-performance, reactive worker pool for Elixir.
+  A worker pool for Elixir, designed to manage finite costly resources with
+  substantial startup latency.
 
   ElasticPool uses a macro-based approach to provide compile-time validation,
-  monomorphized data access, and a clean, module-based API.
+  monomorphized data access, and a module-based API.
 
   ## Configuration
 
@@ -52,20 +53,6 @@ defmodule ElasticPool do
       MyPool.call(:do_something)
   """
 
-  @doc """
-  Defines a specialized pool module.
-
-  Using this macro performs compile-time validation of the worker and policy
-  and generates a specialized supervisor and API for the pool.
-
-  ## Macro Options (Compile-time only)
-
-  - `:worker_handler` - (Required) Worker module implementing `ElasticPool.Worker`.
-  - `:scaling_policy` - Scaling policy module. Defaults to
-    `ElasticPool.Policies.Threshold`.
-
-  All other options should be passed to `start_link/1` at runtime.
-  """
   defmacro __using__(opts) do
     # Pre-compute absolute module names to avoid scoping issues during expansion
     worker_mod = Module.concat(__CALLER__.module, Worker)
