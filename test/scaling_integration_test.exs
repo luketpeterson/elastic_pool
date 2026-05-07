@@ -21,29 +21,30 @@ defmodule ElasticPool.IntegrationTest do
       :ok
     end
   end
-defmodule ScheduledPolicy do
-  @behaviour ElasticPool.ScalingPolicy
-  require ElasticPool
 
-  @impl true
-  def init(opts) do
-    %{initial: opts.pool_config.initial_workers}
+  defmodule ScheduledPolicy do
+    @behaviour ElasticPool.ScalingPolicy
+    require ElasticPool
+
+    @impl true
+    def init(opts) do
+      %{initial: opts.pool_config.initial_workers}
+    end
+
+    @impl true
+    def handle_event(_event, pool, state) do
+      count = ElasticPool.request_count(pool)
+
+      target =
+        cond do
+          count >= 200 -> 5
+          count >= 100 -> 20
+          true -> state.initial
+        end
+
+      {target, state}
+    end
   end
-
-  @impl true
-  def handle_event(_event, pool, state) do
-    count = ElasticPool.request_count(pool)
-
-    target =
-      cond do
-        count >= 200 -> 5
-        count >= 100 -> 20
-        true -> state.initial
-      end
-
-    {target, state}
-  end
-end
 
   defmodule OverTargetPolicy do
     @behaviour ElasticPool.ScalingPolicy
@@ -104,19 +105,24 @@ end
 
     # --- Setup Telemetry Tracking ---
     handler_id = "telemetry-integration-test-handler"
+
     events = [
       [:elastic_pool, :worker, :start],
       [:elastic_pool, :worker, :stop]
     ]
-    :telemetry.attach_many(handler_id, events, &__MODULE__.handle_telemetry/4, %{test_pid: test_pid})
+
+    :telemetry.attach_many(handler_id, events, &__MODULE__.handle_telemetry/4, %{
+      test_pid: test_pid
+    })
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} = ScheduledPool.start_link(
-      initial_workers: 2,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, pid} =
+      ScheduledPool.start_link(
+        initial_workers: 2,
+        worker_args: [test_pid: test_pid]
+      )
 
     # 1. Initial State: 2 workers
     assert ScheduledPool.target_workers() == 2
@@ -125,7 +131,9 @@ end
 
     for _ <- 1..2 do
       assert_receive {:worker_init, _pid}
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
+
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1},
+                      %{start_reason: :initial}}
     end
 
     refute_receive {:worker_init, _}, 100
@@ -146,7 +154,9 @@ end
     # Check inits (exactly 18 new)
     for _ <- 1..18 do
       assert_receive {:worker_init, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :scale_up}}
+
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1},
+                      %{start_reason: :scale_up}}
     end
 
     refute_receive {:worker_init, _}, 100
@@ -167,7 +177,9 @@ end
     # Check for exactly 15 termination messages from scale-down
     for _ <- 1..15 do
       assert_receive {:worker_terminated, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :scale_down}}
+
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1},
+                      %{stop_reason: :scale_down}}
     end
 
     refute_receive {:worker_terminated, _}, 100
@@ -178,7 +190,9 @@ end
     # The remaining 5 workers should all terminate with :shutdown reason
     for _ <- 1..5 do
       assert_receive {:worker_terminated, _pid}, 1000
-      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :shutdown}}
+
+      assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1},
+                      %{stop_reason: :shutdown}}
     end
 
     refute_receive {:worker_terminated, _}, 100
@@ -188,11 +202,12 @@ end
     test_pid = self()
     name = ScheduledPool
 
-    {:ok, pid} = ScheduledPool.start_link(
-      initial_workers: 10,
-      max_workers: 10,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, pid} =
+      ScheduledPool.start_link(
+        initial_workers: 10,
+        max_workers: 10,
+        worker_args: [test_pid: test_pid]
+      )
 
     manager_name = Module.concat(name, WorkerManager)
     manager_pid = Process.whereis(manager_name)
@@ -224,11 +239,12 @@ end
     test_pid = self()
     name = OverTargetPool
 
-    {:ok, pid} = OverTargetPool.start_link(
-      initial_workers: 1,
-      max_workers: 3,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, pid} =
+      OverTargetPool.start_link(
+        initial_workers: 1,
+        max_workers: 3,
+        worker_args: [test_pid: test_pid]
+      )
 
     assert_receive {:worker_init, _pid}, 1000
 
@@ -262,25 +278,39 @@ end
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} = CrashRecoveryPool.start_link(
-      initial_workers: 1,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, pid} =
+      CrashRecoveryPool.start_link(
+        initial_workers: 1,
+        worker_args: [test_pid: test_pid]
+      )
 
     # 1. Capture the initial worker PID and telemetry
     assert_receive {:worker_init, first_pid}
-    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :initial}}
+
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1},
+                    %{start_reason: :initial}}
+
     assert CrashRecoveryPool.active_workers() == 1
 
-    # 2. Trigger Crash
-    spawn(fn -> CrashRecoveryPool.call(:crash) end)
+    # 2. Trigger Crash and prove it propagates to the caller
+    {caller_pid, caller_ref} =
+      spawn_monitor(fn ->
+        CrashRecoveryPool.call(:crash)
+      end)
+
+    assert_receive {:DOWN, ^caller_ref, :process, ^caller_pid, reason}, 1000
+    refute reason == :normal
 
     # 3. Prove Instant Recovery via message passing and telemetry
-    assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1}, %{stop_reason: :crash}}
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :stop], %{count: 1},
+                    %{stop_reason: :crash}}
 
     # The WorkerManager should start a new one immediately.
     assert_receive {:worker_init, second_pid}, 1000
-    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1}, %{start_reason: :recovery}}
+
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1},
+                    %{start_reason: :recovery}}
+
     assert second_pid != first_pid
 
     # NEW: Deterministic Sync Barrier.
