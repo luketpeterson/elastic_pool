@@ -100,11 +100,12 @@ defmodule ElasticPoolTest do
   test "all workers are terminated when pool stops" do
     test_pid = self()
 
-    {:ok, pid} = TerminationPool.start_link(
-      initial_workers: 5,
-      stats_interval: :never,
-      worker_args: [test_pid: test_pid]
-    )
+    {:ok, pid} =
+      TerminationPool.start_link(
+        initial_workers: 5,
+        stats_interval: :never,
+        worker_args: [test_pid: test_pid]
+      )
 
     # Shutdown the pool
     Supervisor.stop(pid)
@@ -176,12 +177,13 @@ defmodule ElasticPoolTest do
 
     # This should crash immediately on start because initial_workers=1
     # but it will keep trying to reconcile until max_restarts (2) is hit.
-    result = IntensityPool.start_link(
-      initial_workers: 1,
-      max_restarts: 2,
-      max_period: 5,
-      stats_interval: :never
-    )
+    result =
+      IntensityPool.start_link(
+        initial_workers: 1,
+        max_restarts: 2,
+        max_period: 5,
+        stats_interval: :never
+      )
 
     # During init failure, start_link returns the error reason
     assert {:error, :supervisor_died} = result
@@ -194,28 +196,33 @@ defmodule ElasticPoolTest do
 
     # --- Setup Telemetry Tracking ---
     handler_id = "telemetry-work-intensity-handler"
+
     :telemetry.attach_many(
       handler_id,
       [[:elastic_pool, :worker, :start]],
       &__MODULE__.handle_telemetry/4,
       %{test_pid: test_pid}
     )
+
     on_exit(fn -> :telemetry.detach(handler_id) end)
     # -------------------------------
 
-    {:ok, pid} = WorkIntensityPool.start_link(
-      initial_workers: 1,
-      max_restarts: 1,
-      max_period: 5,
-      stats_interval: :never
-    )
+    {:ok, pid} =
+      WorkIntensityPool.start_link(
+        initial_workers: 1,
+        max_restarts: 1,
+        max_period: 5,
+        stats_interval: :never
+      )
 
     # We need to crash it 2 times to hit max_restarts: 1
     # 1. First crash - Call synchronously
     catch_exit(WorkIntensityPool.call(:crash))
 
     # Wait for the RECOVERY telemetry (Sent by the worker itself!)
-    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], _, %{start_reason: :recovery}}, 1000
+    assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], _,
+                    %{start_reason: :recovery}},
+                   1000
 
     # 2. Second crash - This should trigger the intensity limit
     catch_exit(WorkIntensityPool.call(:crash))
@@ -228,12 +235,13 @@ defmodule ElasticPoolTest do
   test "pool shuts down when workers fail to start (immediate failure)" do
     Process.flag(:trap_exit, true)
 
-    result = ImmediateFailurePool.start_link(
-      initial_workers: 1,
-      max_restarts: 1,
-      max_period: 5,
-      start_timeout: 1000
-    )
+    result =
+      ImmediateFailurePool.start_link(
+        initial_workers: 1,
+        max_restarts: 1,
+        max_period: 5,
+        start_timeout: 1000
+      )
 
     # This should fail instantly with :supervisor_died.
     assert {:error, :supervisor_died} = result

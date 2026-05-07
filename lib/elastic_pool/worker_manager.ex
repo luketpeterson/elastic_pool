@@ -166,7 +166,7 @@ defmodule ElasticPool.WorkerManager do
       defp check_intensity(state) do
         now = System.monotonic_time(:millisecond)
         # max_period is in seconds, so convert to milliseconds
-        cutoff = now - (state.config.max_period * 1_000)
+        cutoff = now - state.config.max_period * 1_000
 
         # Filter out old restarts
         recent_restarts = [now | Enum.filter(state.restarts, &(&1 > cutoff))]
@@ -186,7 +186,7 @@ defmodule ElasticPool.WorkerManager do
           # Calculate the start reason for this batch once
           # Ensures :initial doesn't flip to :scale_up mid-reconcile
           start_reason =
-            reason || (if active_count == 0, do: :initial, else: :scale_up)
+            reason || if active_count == 0, do: :initial, else: :scale_up
 
           case start_worker(state.config, start_reason) do
             {:ok, pid} ->
