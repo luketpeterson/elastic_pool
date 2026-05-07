@@ -303,7 +303,8 @@ defmodule ElasticPool do
   def validate_config!(_module, _opts), do: :ok
 
   @doc false
-  @spec init_pool(pool_name(), module(), module(), runtime_opts()) :: Supervisor.on_init()
+  @spec init_pool(pool_name(), module(), module(), runtime_opts()) ::
+          {:ok, {Supervisor.sup_flags(), [Supervisor.child()]}}
   def init_pool(name, pool_mod, manager_mod, opts) do
     worker_args = opts[:worker_args] || []
 
