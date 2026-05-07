@@ -64,3 +64,12 @@ MyPool.call({:echo, "hello"})
 - `ElasticPool.Policies.ErlangC` - Predictive queueing-theory-based scaling policy
 - `ElasticPool.Policies.Null` - Fixed-target no-op scaling policy
 - `ElasticPool.Policies.Threshold` - Built-in reactive scaling policy
+
+## Future Features
+
+One natural next step is back-pressure driven by `waiting_clients`.
+
+When the pool is saturated and the checkout queue keeps growing, ElasticPool
+could expose configurable overload behavior such as bounded waiting, fast
+failure, or caller-side throttling instead of allowing demand to accumulate
+without bound.
