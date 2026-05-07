@@ -139,6 +139,44 @@ defmodule ElasticPoolTest do
     Supervisor.stop(pid)
   end
 
+  test "named instances of the same pool module are independent" do
+    {:ok, pool_a_pid} =
+      BasicPool.start_link(name: :pool_a, initial_workers: 1, stats_interval: :never)
+
+    {:ok, pool_b_pid} =
+      BasicPool.start_link(name: :pool_b, initial_workers: 3, stats_interval: :never)
+
+    try do
+      assert BasicPool.target_workers(:pool_a) == 1
+      assert BasicPool.active_workers(:pool_a) == 1
+      assert BasicPool.available_workers(:pool_a) == 1
+      assert BasicPool.request_count(:pool_a) == 0
+
+      assert BasicPool.target_workers(:pool_b) == 3
+      assert BasicPool.active_workers(:pool_b) == 3
+      assert BasicPool.available_workers(:pool_b) == 3
+      assert BasicPool.request_count(:pool_b) == 0
+
+      assert BasicPool.call(:pool_a, :ping, 5_000) == :pong
+      assert BasicPool.call(:pool_a, :ping, 5_000) == :pong
+      assert BasicPool.call(:pool_b, :ping, 5_000) == :pong
+
+      :sys.get_state(:pool_a)
+      :sys.get_state(:pool_b)
+
+      assert BasicPool.request_count(:pool_a) == 2
+      assert BasicPool.request_count(:pool_b) == 1
+
+      assert BasicPool.active_workers(:pool_a) == 1
+      assert BasicPool.available_workers(:pool_a) == 1
+      assert BasicPool.active_workers(:pool_b) == 3
+      assert BasicPool.available_workers(:pool_b) == 3
+    after
+      Supervisor.stop(pool_a_pid)
+      Supervisor.stop(pool_b_pid)
+    end
+  end
+
   test "status shows workers" do
     {:ok, pid} = BasicPool.start_link(initial_workers: 1)
 
