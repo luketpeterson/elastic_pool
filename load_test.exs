@@ -29,6 +29,11 @@ defmodule LoadTest.DummyWorker do
   end
 end
 
+defmodule LTPool do
+  use ElasticPool,
+    worker_handler: LoadTest.DummyWorker
+end
+
 defmodule LoadTest do
   @moduledoc """
   A stochastic load generator for ElasticPool.
@@ -55,15 +60,14 @@ defmodule LoadTest do
     # In a real app, this would likely be in your Application supervision tree.
     if Process.whereis(LTPool), do: Supervisor.stop(LTPool)
 
-    {:ok, _pid} = ElasticPool.start_link(
-      name: LTPool,
-      worker_handler: LoadTest.DummyWorker,
-      max_workers: 8,
-      initial_workers: 2,
-      scaling_policy_opts: [scale_up_threshold: 10]
-    )
+    {:ok, _pid} =
+      LTPool.start_link(
+        max_workers: 8,
+        initial_workers: 2,
+        scaling_policy_opts: [scale_up_threshold: 10]
+      )
 
-    # 2. Perform work using ElasticPool.call/2
+    # 2. Perform work using the pool module's call API
     LoadTest.Harness.start(LTPool, qps, duration, work_duration_ms, shape)
   end
 end
@@ -81,17 +85,29 @@ defmodule LoadTest.Harness do
     avg_interval_us = 1_000_000 / qps
     scale = avg_interval_us / shape
 
-    IO.puts "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_ms}ms, Shape: #{shape}) ---"
+    IO.puts(
+      "\n--- Starting Load Test: #{qps} QPS for #{duration}s (Work: #{work_ms}ms, Shape: #{shape}) ---"
+    )
+
     parent = self()
 
     spawn_link(fn ->
-      dispatch_loop(pool_name, total, System.monotonic_time(:microsecond), shape, scale, parent, work_ms)
+      dispatch_loop(
+        pool_name,
+        total,
+        System.monotonic_time(:microsecond),
+        shape,
+        scale,
+        parent,
+        work_ms
+      )
     end)
 
     collect_results(pool_name, total, [], 0)
   end
 
   defp dispatch_loop(_pool, 0, _last, _sh, _sc, _p, _w), do: :ok
+
   defp dispatch_loop(pool, remaining, last_target, shape, scale, parent, work_ms) do
     delay = next_gamma(shape, scale)
     target = last_target + delay
@@ -101,7 +117,7 @@ defmodule LoadTest.Harness do
 
     spawn(fn ->
       s = System.monotonic_time(:microsecond)
-      res = ElasticPool.call(pool, {:work, work_ms})
+      res = pool.call({:work, work_ms})
       send(parent, {:res, res, System.monotonic_time(:microsecond) - s})
     end)
 
@@ -116,9 +132,10 @@ defmodule LoadTest.Harness do
     if count < total do
       receive do
         {:res, r, l} -> collect_results(pool, total, [{r, l} | results], count + 1)
-      after 60_000 ->
-        IO.puts("\nTimed out waiting for results.")
-        finish(pool, results, total)
+      after
+        60_000 ->
+          IO.puts("\nTimed out waiting for results.")
+          finish(pool, results, total)
       end
     else
       finish(pool, results, total)
@@ -138,10 +155,10 @@ defmodule LoadTest.Harness do
       avg = Enum.sum(latencies) / result_count
       p95 = Enum.sort(latencies) |> Enum.at(max(0, round(result_count * 0.95) - 1))
 
-      IO.puts "\n\nSuccess: #{result_count}/#{total}"
-      IO.puts "Peak Workers: #{ElasticPool.peak_workers(pool)}"
-      IO.puts "Avg Excess Latency: #{Float.round(avg, 2)}ms"
-      IO.puts "P95 Excess Latency: #{Float.round(p95, 2)}ms"
+      IO.puts("\n\nSuccess: #{result_count}/#{total}")
+      IO.puts("Peak Workers: #{pool.peak_workers()}")
+      IO.puts("Avg Excess Latency: #{Float.round(avg, 2)}ms")
+      IO.puts("P95 Excess Latency: #{Float.round(p95, 2)}ms")
     end
   end
 
@@ -150,6 +167,7 @@ defmodule LoadTest.Harness do
   defp next_gamma(a, b) when a < 1.0 do
     next_gamma(a + 1.0, b) * :math.pow(:rand.uniform(), 1.0 / a)
   end
+
   defp next_gamma(a, b) do
     d = a - 1.0 / 3.0
     c = 1.0 / :math.sqrt(9.0 * d)
@@ -159,12 +177,15 @@ defmodule LoadTest.Harness do
   defp generate_gamma(d, c) do
     x = :rand.normal()
     v = 1.0 + c * x
+
     if v <= 0 do
       generate_gamma(d, c)
     else
       v = v * v * v
       u = :rand.uniform()
-      if u < 1.0 - 0.0331 * x * x * x * x or :math.log(u) < 0.5 * x * x + d * (1.0 - v + :math.log(v)) do
+
+      if u < 1.0 - 0.0331 * x * x * x * x or
+           :math.log(u) < 0.5 * x * x + d * (1.0 - v + :math.log(v)) do
         d * v
       else
         generate_gamma(d, c)
