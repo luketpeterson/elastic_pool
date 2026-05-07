@@ -17,13 +17,7 @@ The right scaling behavior is dictated by considerations like:
 - the lag needed to spin up a worker
 - etc.
 
-### Provided Policies
-
-- `ElasticPool.Policies.Null` - Keeps the pool size fixed at the initial worker count
-- `ElasticPool.Policies.Threshold` - Reacts to queue pressure and idle worker count using simple thresholds
-- `ElasticPool.Policies.ErlangC` - Uses queueing theory to target a wait-time budget from observed demand
-
-See `ElasticPool.ScalingPolicy` for implementing a custom policy.
+See `ElasticPool.ScalingPolicy` for the built-in policies as well as implementing a custom policy.
 
 ## Configuration
 
