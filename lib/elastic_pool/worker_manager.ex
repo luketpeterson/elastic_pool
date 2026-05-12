@@ -195,7 +195,6 @@ defmodule ElasticPool.WorkerManager do
         case reconcile(new_target, state) do
           {:ok, new_state} -> new_state
           {:error, :too_many_crashes} ->
-            Supervisor.stop(state.config.name, :shutdown)
             exit(:shutdown)
         end
       end
