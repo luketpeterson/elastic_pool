@@ -146,10 +146,10 @@ defmodule ElasticPool.WorkerManager do
 
         case reason do
           :normal ->
-            {:noreply, evaluate_policy(:checkin, state)}
+            {:noreply, evaluate_policy(:worker_exit, state)}
 
           _other ->
-            state = evaluate_policy(:checkin, state)
+            state = evaluate_policy(:worker_exit, state)
             case check_intensity(state) do
               {:ok, new_state} ->
                 case reconcile(state.target, new_state, :recovery) do

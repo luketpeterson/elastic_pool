@@ -6,34 +6,52 @@ defmodule ElasticPool.Pool do
   @max_spin 100
 
   @spec checkout(atom(), timeout()) :: {:ok, reference() | nil, pid()} | {:error, :timeout | :no_workers}
-
   def checkout(pool_name, timeout \\ :infinity) do
-    atomics = get_atomics(pool_name)
-    :atomics.add(atomics, request_idx(), 1)
+    config = get_config(pool_name)
+    atomics = config.atomics
+
+    # Track request count and sample for policy
+    req_idx = :atomics.add_get(atomics, request_idx(), 1)
+    if rem(req_idx, config.sampling_rate) == 0 do
+      notify_manager(config.manager, {:checkout_sample, weight: config.sampling_rate})
+    end
 
     case :atomics.add_get(atomics, score_idx(), -1) do
       s when s >= 0 ->
-        # Fast path: An idle worker is available in ETS
-      case take_worker_spin(pool_name, @max_spin) do
+        # Transition to Saturation: If we just hit exactly 0 idle workers, 
+        # but the request is being satisfied, we're at the edge.
+        # (Technically saturation starts when we hit -1, handled in wait_for_worker)
+        case take_worker_spin(pool_name, @max_spin) do
           {:ok, pid} ->
             {:ok, nil, pid}
 
           :error ->
             # Atomic counter and ETS are out of sync.
-            # Correct the score and attempt to wait.
             :atomics.add(atomics, score_idx(), 1)
-            wait_for_worker(pool_name, atomics, timeout)
+            wait_for_worker(pool_name, config, timeout)
         end
 
+      -1 ->
+        # Saturation Regime: The moment the first client has to wait
+        notify_manager(config.manager, :saturation_regime)
+        wait_for_worker(pool_name, config, timeout)
+
       _s ->
-        # Slow path: Pool is empty, must wait for a checkin
-        wait_for_worker(pool_name, atomics, timeout)
+        # Slow path: Pool is already empty
+        wait_for_worker(pool_name, config, timeout)
     end
   end
 
   @spec checkin(atom(), pid()) :: :ok
   def checkin(pool_name, worker_pid) do
-    atomics = get_atomics(pool_name)
+    config = get_config(pool_name)
+    atomics = config.atomics
+
+    # Track completion count and sample for policy
+    comp_idx = :atomics.add_get(atomics, completion_idx(), 1)
+    if rem(comp_idx, config.sampling_rate) == 0 do
+      notify_manager(config.manager, {:checkin_sample, weight: config.sampling_rate})
+    end
 
     case :atomics.add_get(atomics, score_idx(), 1) do
       s when s <= 0 ->
@@ -45,16 +63,20 @@ defmodule ElasticPool.Pool do
 
           :error ->
             # Atomic counter and ETS are out of sync. Treat worker as idle.
+            # Correction: if we were supposed to hand off but failed, we might enter idle regime
             put_worker_idle(pool_name, worker_pid)
             :ok
         end
 
+      1 ->
+        # Idle Regime: The moment the last waiting client is satisfied
+        notify_manager(config.manager, :idle_regime)
+        put_worker_idle(pool_name, worker_pid)
+        :ok
+
       _s ->
         # Idle path: No one is waiting
         put_worker_idle(pool_name, worker_pid)
-        # Signal the manager that a checkin occurred (hint for scale-down)
-        manager = Module.concat(pool_name, WorkerManager)
-        GenServer.cast(manager, {:policy_event, :checkin})
         :ok
     end
   end
@@ -66,6 +88,22 @@ defmodule ElasticPool.Pool do
   end
 
   # --- Internal Logic ---
+
+  defp get_config(pool_name) do
+    # In this architecture, the config is stored in the manager's state,
+    # but for high-performance access in the pool, we retrieve it from the stats table.
+    # Note: We can optimize this by only looking up the atomics and manager once.
+    # For now, we fetch the atomics reference from ETS.
+    %{
+      atomics: :ets.lookup_element(pool_name, :atomics, 2),
+      manager: Module.concat(pool_name, WorkerManager),
+      sampling_rate: :ets.lookup_element(pool_name, :sampling_rate, 2)
+    }
+  end
+
+  defp notify_manager(manager, event) do
+    GenServer.cast(manager, {:policy_event, event})
+  end
 
   defp get_atomics(pool_name) do
     :ets.lookup_element(pool_name, :atomics, 2)
@@ -116,14 +154,10 @@ defmodule ElasticPool.Pool do
     end
   end
 
-  defp wait_for_worker(pool_name, atomics, timeout) do
+  defp wait_for_worker(pool_name, config, timeout) do
     table = Module.concat(pool_name, WaitingClients)
     ref = make_ref()
     :ets.insert(table, {ref, self()})
-
-    # Signal the manager that a checkout failed (hint for scale-up)
-    manager = Module.concat(pool_name, WorkerManager)
-    GenServer.cast(manager, {:policy_event, :checkout_failed})
 
     receive do
       {:elastic_pool, :worker, ^ref, worker_pid} ->
@@ -134,12 +168,11 @@ defmodule ElasticPool.Pool do
         :ets.delete(table, ref)
 
         # Atomic Correction: We "undo" our reservation.
-        # This might trigger a "Ghost Client" for a concurrent checkin,
-        # but the checkin logic handles it by putting the worker back to idle.
-        :atomics.add(atomics, score_idx(), 1)
+        :atomics.add(config.atomics, score_idx(), 1)
         {:error, :timeout}
     end
   end
+
 
   defp put_worker_idle(pool_name, worker_pid) do
     table = Module.concat(pool_name, AvailableWorkers)

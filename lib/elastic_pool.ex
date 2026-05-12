@@ -312,6 +312,9 @@ defmodule ElasticPool do
           {:ok, {Supervisor.sup_flags(), [Supervisor.child()]}}
   def init_pool(name, manager_mod, opts) do
     worker_args = opts[:worker_args] || []
+    initial_workers = opts[:initial_workers] || 2
+    max_workers = opts[:max_workers] || :infinity
+    sampling_rate = opts[:policy_sampling_rate] || 100
 
     # ZERO-CONCAT DESIGN:
     # Handles are computed once at initialization and stored in process state.
@@ -327,14 +330,17 @@ defmodule ElasticPool do
     # Initialize Atomics
     import ElasticPool.Atomics
     atomics = :atomics.new(count(), signed: true)
-    initial_workers = opts[:initial_workers] || 2
+
     :atomics.put(atomics, score_idx(), 0)
     :atomics.put(atomics, active_idx(), 0)
     :atomics.put(atomics, peak_idx(), 0)
     :atomics.put(atomics, request_idx(), 0)
+    :atomics.put(atomics, completion_idx(), 0)
     :atomics.put(atomics, target_idx(), initial_workers)
 
     :ets.insert(stats_table, {:atomics, atomics})
+    # Mirror sampling_rate to ETS to allow lock-free access in the caller's process (Pool)
+    :ets.insert(stats_table, {:sampling_rate, sampling_rate})
 
     # Initialize specialized ETS tables for hot paths
     available_table = Module.concat(name, AvailableWorkers)
@@ -357,7 +363,8 @@ defmodule ElasticPool do
       available_table: available_table,
       waiting_table: waiting_table,
       atomics: atomics,
-      max_workers: Keyword.get(opts, :max_workers, :infinity),
+      sampling_rate: sampling_rate,
+      max_workers: max_workers,
       initial_workers: initial_workers,
       max_restarts: opts[:max_restarts] || 3,
       max_period: opts[:max_period] || 5,

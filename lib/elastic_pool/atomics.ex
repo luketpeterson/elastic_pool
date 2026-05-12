@@ -14,9 +14,12 @@ defmodule ElasticPool.Atomics do
   # Total number of checkout requests since start.
   defmacro request_idx, do: 4
 
+  # Total number of checkins (completed jobs) since start.
+  defmacro completion_idx, do: 5
+
   # The current capacity goal of the scaling policy.
-  defmacro target_idx, do: 5
+  defmacro target_idx, do: 6
 
   # Total number of slots to allocate in :atomics.new/2
-  defmacro count, do: 5
+  defmacro count, do: 6
 end
