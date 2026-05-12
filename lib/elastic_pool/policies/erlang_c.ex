@@ -18,6 +18,8 @@ defmodule ElasticPool.Policies.ErlangC do
     `:initial_workers`
   - `:bootstrap_service_time_ms` - initial service time estimate used before
     enough live completion data is available. Defaults to `100`
+  - `:bootstrap_arrival_rate` - initial arrival rate estimate (requests/sec)
+    used before enough live checkout samples are available. Defaults to `0.0`
   - `:smoothing` - EWMA smoothing factor for rate and service-time estimates.
     Defaults to `0.2`
   - `:max_search_workers` - search cap used only when the pool's `:max_workers`

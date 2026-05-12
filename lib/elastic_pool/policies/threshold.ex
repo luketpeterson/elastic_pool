@@ -33,33 +33,26 @@ defmodule ElasticPool.Policies.Threshold do
           ElasticPool.ScalingPolicy.pool_name(),
           state()
         ) :: {ElasticPool.ScalingPolicy.target_decision(), state()}
-  def handle_event(event, pool, state) do
+  def handle_event(_event, pool, state) do
     old_target = ElasticPool.target_workers(pool)
     active = ElasticPool.active_workers(pool)
 
+    # Note: We only adjust the target when we've hit our current goal (active == old_target).
+    # This prevents the policy from "flapping" or over-shooting while workers are
+    # still in their long boot-up phase.
     target =
       if active == old_target do
-        # We're in a steady state, so we might want to adjust the target
-        case event do
-          :checkout_failed ->
-            waiting = ElasticPool.waiting_clients(pool)
+        waiting = ElasticPool.waiting_clients(pool)
+        available = ElasticPool.available_workers(pool)
 
-            if waiting > state.scale_up_threshold do
-              old_target + 1
-            else
-              :no_change
-            end
+        cond do
+          waiting > state.scale_up_threshold ->
+            old_target + 1
 
-          :checkin ->
-            available = ElasticPool.available_workers(pool)
+          available > state.available_reserve ->
+            max(old_target - 1, 1)
 
-            if available > state.available_reserve do
-              max(old_target - 1, 0)
-            else
-              :no_change
-            end
-
-          _ ->
+          true ->
             :no_change
         end
       else
