@@ -31,21 +31,24 @@ defmodule ElasticPool.StatsPoller do
 
   @impl true
   def handle_info(:poll, state) do
-    stats_table = state.config.stats_table
     pool_name = state.config.name
+    atomics = state.config.atomics
+    import ElasticPool.Atomics
 
-    # Read absolute state using high-performance accessors
-    active = get_stat_safe(stats_table, :active_workers)
-    available = get_stat_safe(stats_table, :available_workers)
+    # Read from atomics (score, active, peak, requests, target)
+    score = :atomics.get(atomics, score_idx())
+    active = :atomics.get(atomics, active_idx())
+    available = if score > 0, do: score, else: 0
+    waiting = if score < 0, do: abs(score), else: 0
 
     measurements = %{
-      target_workers: get_stat_safe(stats_table, :target_workers),
+      target_workers: :atomics.get(atomics, target_idx()),
       active_workers: active,
       available_workers: available,
       busy_workers: active - available,
-      peak_workers: get_stat_safe(stats_table, :peak_workers),
-      waiting_clients: get_stat_safe(stats_table, :waiting_clients),
-      request_count: get_stat_safe(stats_table, :request_count)
+      peak_workers: :atomics.get(atomics, peak_idx()),
+      waiting_clients: waiting,
+      request_count: :atomics.get(atomics, request_idx())
     }
 
     # Emit the heartbeat

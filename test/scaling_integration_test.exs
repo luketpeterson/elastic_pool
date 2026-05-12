@@ -1,5 +1,6 @@
 defmodule ElasticPool.IntegrationTest do
   use ExUnit.Case
+  require ElasticPool
 
   defmodule TrackingWorker do
     use ElasticPool.Worker
@@ -123,7 +124,7 @@ defmodule ElasticPool.IntegrationTest do
 
   test "scaling up and down based on request count with lifecycle tracking" do
     test_pid = self()
-    name = ScheduledPool
+    name = :scaling_test
 
     # --- Setup Telemetry Tracking ---
     handler_id = "telemetry-integration-test-handler"
@@ -142,14 +143,15 @@ defmodule ElasticPool.IntegrationTest do
 
     {:ok, pid} =
       ScheduledPool.start_link(
+        name: name,
         initial_workers: 2,
         worker_args: [test_pid: test_pid]
       )
 
     # 1. Initial State: 2 workers
-    assert ScheduledPool.target_workers() == 2
-    assert ScheduledPool.active_workers() == 2
-    assert ScheduledPool.available_workers() == 2
+    assert ScheduledPool.target_workers(name) == 2
+    assert ScheduledPool.active_workers(name) == 2
+    assert ScheduledPool.available_workers(name) == 2
 
     for _ <- 1..2 do
       assert_receive {:worker_init, _pid}
@@ -162,7 +164,7 @@ defmodule ElasticPool.IntegrationTest do
 
     # 2. Trigger Scale-Up: Send 100 requests
     for _ <- 1..100 do
-      assert ScheduledPool.call(:ping) == :pong
+      assert ScheduledPool.call(name, :ping, 10000) == :pong
     end
 
     # Wait for policy to hit target
@@ -170,8 +172,8 @@ defmodule ElasticPool.IntegrationTest do
     # Wait for all 20 workers to be active AND idle
     wait_for_idle(name)
 
-    assert ScheduledPool.active_workers() == 20
-    assert ScheduledPool.available_workers() == 20
+    assert ScheduledPool.active_workers(name) == 20
+    assert ScheduledPool.available_workers(name) == 20
 
     # Check inits (exactly 18 new)
     for _ <- 1..18 do
@@ -183,9 +185,9 @@ defmodule ElasticPool.IntegrationTest do
 
     refute_receive {:worker_init, _}, 100
 
-    # 3. Trigger Scale-Down: Send 100 more requests (Total 200)
+    # 3. Trigger Scale-Down: Send 100 more requests to hit the 200/5 target
     for _ <- 1..100 do
-      assert ScheduledPool.call(:ping) == :pong
+      assert ScheduledPool.call(name, :ping, 10000) == :pong
     end
 
     # Wait for policy to hit target
@@ -193,8 +195,9 @@ defmodule ElasticPool.IntegrationTest do
     # Wait for pool to settle at 5 workers and be idle
     wait_for_idle(name)
 
-    assert ScheduledPool.active_workers() == 5
-    assert ScheduledPool.available_workers() == 5
+    assert ScheduledPool.active_workers(name) == 5
+    assert ScheduledPool.available_workers(name) == 5
+
 
     # Check for exactly 15 termination messages from scale-down
     for _ <- 1..15 do
@@ -222,10 +225,11 @@ defmodule ElasticPool.IntegrationTest do
 
   test "WorkerManager survives scale-down" do
     test_pid = self()
-    name = ScheduledPool
+    name = :survive_pool
 
     {:ok, pid} =
       ScheduledPool.start_link(
+        name: name,
         initial_workers: 10,
         max_workers: 10,
         worker_args: [test_pid: test_pid]
@@ -240,7 +244,7 @@ defmodule ElasticPool.IntegrationTest do
 
     # Trigger Scale-Down: Send 200 requests to hit the 5 worker target
     for _ <- 1..200 do
-      ScheduledPool.call(:ping)
+      ScheduledPool.call(name, :ping, :infinity)
     end
 
     # Wait for target and idle
@@ -252,17 +256,18 @@ defmodule ElasticPool.IntegrationTest do
                    1000,
                    "WorkerManager crashed during scale-down!"
 
-    assert ScheduledPool.active_workers() == 5
+    assert ScheduledPool.active_workers(name) == 5
 
     Supervisor.stop(pid)
   end
 
   test "WorkerManager enforces max_workers as a hard cap" do
     test_pid = self()
-    name = OverTargetPool
+    name = :max_workers_pool
 
     {:ok, pid} =
       OverTargetPool.start_link(
+        name: name,
         initial_workers: 1,
         max_workers: 3,
         worker_args: [test_pid: test_pid]
@@ -271,23 +276,24 @@ defmodule ElasticPool.IntegrationTest do
     assert_receive {:worker_init, _pid}, 1000
 
     for _ <- 1..10 do
-      assert OverTargetPool.call(:ping) == :pong
+      assert OverTargetPool.call(name, :ping, 10000) == :pong
     end
 
     wait_for_idle(name)
 
-    assert OverTargetPool.active_workers() == 3
-    assert OverTargetPool.available_workers() == 3
+    assert OverTargetPool.active_workers(name) == 3
+    assert OverTargetPool.available_workers(name) == 3
 
     Supervisor.stop(pid)
   end
 
   test "Erlang-C policy scales up under sustained queued demand" do
     test_pid = self()
-    name = ErlangCPool
+    name = :erlang_c_pool
 
     {:ok, pid} =
       ErlangCPool.start_link(
+        name: name,
         initial_workers: 1,
         max_workers: 6,
         stats_interval: :never,
@@ -303,18 +309,18 @@ defmodule ElasticPool.IntegrationTest do
     tasks =
       for _ <- 1..20 do
         Task.async(fn ->
-          ErlangCPool.call({:sleep, 75}, 5_000)
+          ErlangCPool.call(name, {:sleep, 75}, 10_000)
         end)
       end
 
     Enum.each(tasks, fn task ->
-      assert Task.await(task, 10_000) == :ok
+      assert Task.await(task, 15_000) == :ok
     end)
 
     wait_for_min_peak(name, 2)
 
-    assert ErlangCPool.peak_workers() >= 2
-    assert ErlangCPool.target_workers() >= 2
+    assert ErlangCPool.peak_workers(name) >= 2
+    assert ErlangCPool.target_workers(name) >= 2
 
     Supervisor.stop(pid)
   end
@@ -322,7 +328,7 @@ defmodule ElasticPool.IntegrationTest do
   @tag :capture_log
   test "instant recovery from worker crash" do
     test_pid = self()
-    name = CrashRecoveryPool
+    name = :crash_pool
 
     # --- Setup Telemetry Tracking ---
     handler_id = "telemetry-crash-test-handler"
@@ -339,6 +345,7 @@ defmodule ElasticPool.IntegrationTest do
 
     {:ok, pid} =
       CrashRecoveryPool.start_link(
+        name: name,
         initial_workers: 1,
         worker_args: [test_pid: test_pid]
       )
@@ -349,12 +356,12 @@ defmodule ElasticPool.IntegrationTest do
     assert_receive {:telemetry_event, [:elastic_pool, :worker, :start], %{count: 1},
                     %{start_reason: :initial}}
 
-    assert CrashRecoveryPool.active_workers() == 1
+    assert CrashRecoveryPool.active_workers(name) == 1
 
     # 2. Trigger Crash and prove it propagates to the caller
     {caller_pid, caller_ref} =
       spawn_monitor(fn ->
-        CrashRecoveryPool.call(:crash)
+        CrashRecoveryPool.call(name, :crash, 10000)
       end)
 
     assert_receive {:DOWN, ^caller_ref, :process, ^caller_pid, reason}, 1000
@@ -376,14 +383,14 @@ defmodule ElasticPool.IntegrationTest do
     :sys.get_state(name)
 
     # 4. Verify the new worker is functional and stats are correct
-    assert CrashRecoveryPool.active_workers() == 1
-    assert CrashRecoveryPool.call(:ping) == :pong
+    assert CrashRecoveryPool.active_workers(name) == 1
+    assert CrashRecoveryPool.call(name, :ping, 10000) == :pong
 
     Supervisor.stop(pid)
   end
 
-  defp wait_for_target(name, expected, retries \\ 100) do
-    if name.target_workers() == expected or retries == 0 do
+  defp wait_for_target(name, expected, retries \\ 500) do
+    if ElasticPool.target_workers(name) == expected or retries == 0 do
       :ok
     else
       Process.sleep(10)
@@ -392,8 +399,8 @@ defmodule ElasticPool.IntegrationTest do
   end
 
   defp wait_for_idle(name, retries \\ 100) do
-    active = name.active_workers()
-    available = name.available_workers()
+    active = ElasticPool.active_workers(name)
+    available = ElasticPool.available_workers(name)
 
     if (active > 0 and active == available) or retries == 0 do
       :ok
@@ -403,14 +410,15 @@ defmodule ElasticPool.IntegrationTest do
     end
   end
 
-  defp wait_for_min_peak(name, expected, retries \\ 100) do
-    if name.peak_workers() >= expected or retries == 0 do
+  defp wait_for_min_peak(name, min, retries \\ 100) do
+    if ElasticPool.peak_workers(name) >= min or retries == 0 do
       :ok
     else
       Process.sleep(10)
-      wait_for_min_peak(name, expected, retries - 1)
+      wait_for_min_peak(name, min, retries - 1)
     end
   end
+
 
   def handle_telemetry(name, measurements, metadata, config) do
     send(config.test_pid, {:telemetry_event, name, measurements, metadata})

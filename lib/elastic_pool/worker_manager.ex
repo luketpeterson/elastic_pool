@@ -10,35 +10,26 @@ defmodule ElasticPool.WorkerManager do
   # - Acting as the direct supervisor for all workers by trapping exits.
 
   @doc false
-  defmacro __monomorphize__(worker_mod) do
-    quote bind_quoted: [worker_mod: worker_mod] do
+  defmacro __monomorphize__(worker_mod, policy_mod) do
+    quote bind_quoted: [worker_mod: worker_mod, policy_mod: policy_mod] do
       use GenServer
       require Logger
       require ElasticPool
+      import ElasticPool.Atomics
 
       @worker_mod worker_mod
+      @policy_mod policy_mod
 
       def start_link(config) do
         GenServer.start_link(__MODULE__, config, name: config.manager)
       end
 
-      def set_target(manager, target) do
-        GenServer.cast(manager, {:set_target, target})
-      end
-
-      def wait_for_ready(manager, stats_table, count, timeout) do
-        GenServer.call(manager, {:wait_for_ready, stats_table, count}, timeout)
+      def wait_for_ready(manager, count, timeout) do
+        GenServer.call(manager, {:wait_for_ready, count}, timeout)
       end
 
       def worker_ready(manager, pid) do
         GenServer.cast(manager, {:worker_ready, pid})
-      end
-
-      @doc """
-      Safely stops a worker that has been dismissed by the Pool.
-      """
-      def stop_worker(manager, pid) do
-        GenServer.cast(manager, {:stop_worker, pid})
       end
 
       # --- Callbacks ---
@@ -50,20 +41,33 @@ defmodule ElasticPool.WorkerManager do
 
         target = min(config.initial_workers, config.max_workers)
 
+        # Initialize Policy State
+        policy_state =
+          @policy_mod.init(%{
+            policy_opts: config.scaling_policy_opts,
+            pool_config: config
+          })
+
         state = %{
           # The full pool configuration (max_workers, handler, etc.)
           config: config,
           # Atom name of the pool for identification in logs and telemetry
           pool_name: config.name,
-          # Current capacity target requested by the Scaling Policy
+          # Cached access to the atomic state
+          atomics: config.atomics,
           target: target,
           # Set of all physical worker PIDs currently linked to this manager
           workers: MapSet.new(),
           # List of monotonic timestamps of recent worker crashes for intensity tracking
           restarts: [],
           # List of {from, target_count} clients waiting for initial boot-up
-          waiting_readiness: []
+          waiting_readiness: [],
+          # State of scaling policy
+          policy_state: policy_state
         }
+
+        # Schedule periodic policy evaluation (every 100ms)
+        :timer.send_interval(100, :policy_heartbeat)
 
         # Initial scale-up to baseline
         {:ok, state, {:continue, :init_workers}}
@@ -78,8 +82,8 @@ defmodule ElasticPool.WorkerManager do
       end
 
       @impl true
-      def handle_call({:wait_for_ready, stats_table, count}, from, state) do
-        current_count = ElasticPool.active_workers(stats_table)
+      def handle_call({:wait_for_ready, count}, from, state) do
+        current_count = :atomics.get(state.atomics, active_idx())
 
         if current_count >= count do
           {:reply, :ok, state}
@@ -89,51 +93,40 @@ defmodule ElasticPool.WorkerManager do
       end
 
       @impl true
-      def handle_cast({:set_target, target}, state) do
-        target = min(target, state.config.max_workers)
-
-        case reconcile(target, %{state | target: target}) do
-          {:ok, new_state} -> {:noreply, new_state}
-          {:error, :too_many_crashes} -> {:stop, :reached_max_restart_intensity, state}
-        end
-      end
-
-      @impl true
-      def handle_cast({:stop_worker, pid}, state) do
-        if MapSet.member?(state.workers, pid) do
-          # Normal exit - won't trigger "crash" recovery
-          Process.exit(pid, :normal)
-        end
-
-        {:noreply, state}
-      end
-
-      @impl true
       def handle_cast({:worker_ready, pid}, state) do
-        # 1. Register the worker with the Pool synchronously
-        # This ensures the worker is in the 'available' list and reflected in ETS
-        # before we notify any waiters.
-        case ElasticPool.Pool.add_worker(state.config.pool, pid) do
-          :ok ->
-            current_count = ElasticPool.active_workers(state.config.stats_table)
+        # Update atomics for active/peak
+        new_active = :atomics.add_get(state.atomics, active_idx(), 1)
+        update_peak(state.atomics, new_active)
 
-            # 2. Check if we can satisfy any clients waiting for pool readiness
-            remaining_waiting =
-              Enum.reduce(state.waiting_readiness, [], fn {from, count}, acc ->
-                if current_count >= count do
-                  GenServer.reply(from, :ok)
-                  acc
-                else
-                  [{from, count} | acc]
-                end
-              end)
+        # Evaluate policy
+        state = evaluate_policy(:worker_ready, state)
 
-            {:noreply, %{state | waiting_readiness: remaining_waiting}}
+        # Register with Pool rotation
+        ElasticPool.Pool.add_worker(state.config.pool, pid)
 
-          :error ->
-            # Worker died during handover
-            {:noreply, state}
-        end
+        # Check readiness waiters
+        current_count = :atomics.get(state.atomics, active_idx())
+        remaining_waiting =
+          Enum.reduce(state.waiting_readiness, [], fn {from, count}, acc ->
+            if current_count >= count do
+              GenServer.reply(from, :ok)
+              acc
+            else
+              [{from, count} | acc]
+            end
+          end)
+
+        {:noreply, %{state | waiting_readiness: remaining_waiting}}
+      end
+
+      @impl true
+      def handle_cast({:policy_event, event}, state) do
+        {:noreply, evaluate_policy(event, state)}
+      end
+
+      @impl true
+      def handle_info(:policy_heartbeat, state) do
+        {:noreply, evaluate_policy(:periodic, state)}
       end
 
       @impl true
@@ -141,27 +134,131 @@ defmodule ElasticPool.WorkerManager do
         new_workers = MapSet.delete(state.workers, pid)
         state = %{state | workers: new_workers}
 
+        # Update active count
+        :atomics.add(state.atomics, active_idx(), -1)
+
+        # Determine if we should clean up from available list
+        # If it was in the available table, it was idle, so we must decrement the score
+        if :ets.member(state.config.available_table, pid) do
+          :ets.delete(state.config.available_table, pid)
+          :atomics.add(state.atomics, score_idx(), -1)
+        end
+
         case reason do
           :normal ->
-            # Planned scale-down or clean exit, do nothing.
-            {:noreply, state}
+            {:noreply, evaluate_policy(:checkin, state)}
 
           _other ->
+            state = evaluate_policy(:checkin, state)
             case check_intensity(state) do
               {:ok, new_state} ->
-                # Instant Recovery: Reconcile immediately to hit target
                 case reconcile(state.target, new_state, :recovery) do
                   {:ok, final_state} -> {:noreply, final_state}
-                  {:error, :too_many_crashes} -> {:stop, :reached_max_restart_intensity, state}
+                  {:error, :too_many_crashes} ->
+                    # Stop the entire supervisor tree
+                    Supervisor.stop(state.config.name, :shutdown)
+                    {:stop, :shutdown, state}
                 end
 
               {:error, :too_many_crashes} ->
-                {:stop, :reached_max_restart_intensity, state}
+                # Stop the entire supervisor tree
+                Supervisor.stop(state.config.name, :shutdown)
+                {:stop, :shutdown, state}
             end
         end
       end
 
       # --- Private ---
+
+      defp apply_target(new_target, state) do
+        # Always update target in atomics
+        :atomics.put(state.atomics, target_idx(), new_target)
+
+        state = %{state | target: new_target}
+        active_count = :atomics.get(state.atomics, active_idx())
+
+        if new_target < active_count do
+          # Scale down: acquire workers from the idle pool
+          to_kill = active_count - new_target
+          kill_idle_workers(to_kill, state)
+        end
+
+        case reconcile(new_target, state) do
+          {:ok, new_state} -> new_state
+          {:error, :too_many_crashes} ->
+            Supervisor.stop(state.config.name, :shutdown)
+            exit(:shutdown)
+        end
+      end
+
+      defp kill_idle_workers(0, _state), do: :ok
+      defp kill_idle_workers(n, state) do
+        # The "Third-Party Thief" logic:
+        # Act like a client to safely take a worker for termination
+        case :atomics.add_get(state.atomics, score_idx(), -1) do
+          s when s >= 0 ->
+            case take_worker_spin(state.config.available_table, 100) do
+              {:ok, pid} ->
+                Process.exit(pid, :normal)
+                kill_idle_workers(n - 1, state)
+              :error ->
+                # Zombie write correction
+                :atomics.add(state.atomics, score_idx(), 1)
+                :ok
+            end
+          _s ->
+            # No idle workers to kill, undo reservation
+            :atomics.add(state.atomics, score_idx(), 1)
+            :ok
+        end
+      end
+
+      defp take_worker_spin(table, 0), do: :error
+      defp take_worker_spin(table, limit) do
+        case :ets.first(table) do
+          :"$end_of_table" -> take_worker_spin(table, limit - 1)
+          pid ->
+            if :ets.delete(table, pid), do: {:ok, pid}, else: take_worker_spin(table, limit - 1)
+        end
+      end
+
+      defp evaluate_policy(event, state) do
+        # If we are polling and have waiting clients, treat it as a checkout failure
+        score = :atomics.get(state.atomics, score_idx())
+        event =
+          if event == :periodic and score < 0 do
+            :checkout_failed
+          else
+            event
+          end
+
+        {target, new_policy_state} =
+          @policy_mod.handle_event(event, state.pool_name, state.policy_state)
+
+        state = %{state | policy_state: new_policy_state}
+
+        case target do
+          :no_change -> state
+          new_target ->
+            new_target = min(new_target, state.config.max_workers)
+            if new_target != state.target do
+              apply_target(new_target, state)
+            else
+              state
+            end
+        end
+      end
+
+
+      defp update_peak(atomics, current) do
+        peak = :atomics.get(atomics, peak_idx())
+        if current > peak do
+          case :atomics.compare_exchange(atomics, peak_idx(), peak, current) do
+            :ok -> :ok
+            _ -> update_peak(atomics, current)
+          end
+        end
+      end
 
       defp check_intensity(state) do
         now = System.monotonic_time(:millisecond)
@@ -185,8 +282,7 @@ defmodule ElasticPool.WorkerManager do
         if needed > 0 do
           # Calculate the start reason for this batch once
           # Ensures :initial doesn't flip to :scale_up mid-reconcile
-          start_reason =
-            reason || if active_count == 0, do: :initial, else: :scale_up
+          start_reason = reason || if active_count == 0, do: :initial, else: :scale_up
 
           case start_worker(state.config, start_reason) do
             {:ok, pid} ->
@@ -204,33 +300,18 @@ defmodule ElasticPool.WorkerManager do
       end
 
       defp start_worker(config, reason) do
-        worker_args =
-          [
-            pool: config.pool,
-            manager: config.manager,
-            start_reason: reason
-          ] ++ config.worker_args
-
         # Link directly to the manager so we can trap exits
-        # MONOMORPHIZED: We call the specialized worker module directly.
+        worker_args = [pool: config.pool, manager: config.manager, start_reason: reason] ++ config.worker_args
         @worker_mod.start_link(worker_args)
       end
     end
   end
 
-  def set_target(manager, target) do
-    GenServer.cast(manager, {:set_target, target})
-  end
-
-  def wait_for_ready(manager, stats_table, count, timeout) do
-    GenServer.call(manager, {:wait_for_ready, stats_table, count}, timeout)
+  def wait_for_ready(manager, count, timeout) do
+    GenServer.call(manager, {:wait_for_ready, count}, timeout)
   end
 
   def worker_ready(manager, pid) do
     GenServer.cast(manager, {:worker_ready, pid})
-  end
-
-  def stop_worker(manager, pid) do
-    GenServer.cast(manager, {:stop_worker, pid})
   end
 end

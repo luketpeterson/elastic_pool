@@ -46,7 +46,6 @@ defmodule ElasticPool do
     # Pre-compute absolute module names to avoid scoping issues during expansion
     worker_mod = Module.concat(__CALLER__.module, Worker)
     manager_mod = Module.concat(__CALLER__.module, WorkerManager)
-    pool_mod = Module.concat(__CALLER__.module, Pool)
 
     quote do
       use Supervisor
@@ -85,14 +84,16 @@ defmodule ElasticPool do
         manager_handle = Module.concat(name, WorkerManager)
         stats_handle = name
 
-        # We start the supervisor unnamed to allow the Pool GenServer to take
-        # the provided 'name' atom.
-        case Supervisor.start_link(__MODULE__, runtime_opts) do
+        # We start the supervisor named to allow management via the provided 'name' atom.
+        # This Supervisor will have 3 children:
+        # - The WorkerManager, which supervises the workers
+        # - The StatsPoller, (optional)
+        # - The ETS table that holds the state of the pool
+        case Supervisor.start_link(__MODULE__, runtime_opts, name: name) do
           {:ok, pid} ->
             try do
               case ElasticPool.WorkerManager.wait_for_ready(
                      manager_handle,
-                     stats_handle,
                      initial,
                      timeout
                    ) do
@@ -117,7 +118,7 @@ defmodule ElasticPool do
       def init(runtime_opts) do
         ElasticPool.init_pool(
           runtime_opts[:name] || __MODULE__,
-          unquote(pool_mod),
+
           unquote(manager_mod),
           runtime_opts
         )
@@ -133,13 +134,7 @@ defmodule ElasticPool do
       defmodule WorkerManager do
         require ElasticPool.WorkerManager
         # Link to the specialized sibling Worker module using its absolute name
-        ElasticPool.WorkerManager.__monomorphize__(unquote(worker_mod))
-      end
-
-      # Specialized Pool Module for this Pool
-      defmodule Pool do
-        require ElasticPool.Pool
-        ElasticPool.Pool.__monomorphize__(policy)
+        ElasticPool.WorkerManager.__monomorphize__(unquote(worker_mod), policy)
       end
 
       @doc """
@@ -209,13 +204,17 @@ defmodule ElasticPool do
   end
 
   # --- High Performance Public Accessor Macros ---
+  require ElasticPool.Atomics
 
   @doc """
   Returns the 'Target' number of workers the pool intends to have.
   Fails if the pool is not running.
   """
   defmacro target_workers(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :target_workers, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      :atomics.get(atomics, unquote(ElasticPool.Atomics.target_idx()))
+    end
   end
 
   @doc """
@@ -223,7 +222,10 @@ defmodule ElasticPool do
   Fails if the pool is not running.
   """
   defmacro active_workers(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :active_workers, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      :atomics.get(atomics, unquote(ElasticPool.Atomics.active_idx()))
+    end
   end
 
   @doc """
@@ -231,7 +233,11 @@ defmodule ElasticPool do
   Fails if the pool is not running.
   """
   defmacro available_workers(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :available_workers, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      score = :atomics.get(atomics, unquote(ElasticPool.Atomics.score_idx()))
+      if score > 0, do: score, else: 0
+    end
   end
 
   @doc """
@@ -239,7 +245,10 @@ defmodule ElasticPool do
   Fails if the pool is not running.
   """
   defmacro peak_workers(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :peak_workers, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      :atomics.get(atomics, unquote(ElasticPool.Atomics.peak_idx()))
+    end
   end
 
   @doc """
@@ -247,7 +256,11 @@ defmodule ElasticPool do
   Fails if the pool is not running.
   """
   defmacro waiting_clients(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :waiting_clients, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      score = :atomics.get(atomics, unquote(ElasticPool.Atomics.score_idx()))
+      if score < 0, do: abs(score), else: 0
+    end
   end
 
   @doc """
@@ -255,7 +268,10 @@ defmodule ElasticPool do
   Fails if the pool is not running.
   """
   defmacro request_count(pool) do
-    quote do: :ets.lookup_element(unquote(pool), :request_count, 2)
+    quote do
+      atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
+      :atomics.get(atomics, unquote(ElasticPool.Atomics.request_idx()))
+    end
   end
 
   # --- Internal Helpers ---
@@ -292,9 +308,9 @@ defmodule ElasticPool do
   def validate_config!(_module, _opts), do: :ok
 
   @doc false
-  @spec init_pool(pool_name(), module(), module(), runtime_opts()) ::
+  @spec init_pool(pool_name(), module(), runtime_opts()) ::
           {:ok, {Supervisor.sup_flags(), [Supervisor.child()]}}
-  def init_pool(name, pool_mod, manager_mod, opts) do
+  def init_pool(name, manager_mod, opts) do
     worker_args = opts[:worker_args] || []
 
     # ZERO-CONCAT DESIGN:
@@ -308,25 +324,41 @@ defmodule ElasticPool do
       :ets.new(stats_table, [:public, :set, :named_table, read_concurrency: true])
     end
 
-    :ets.insert(stats_table, [
-      {:target_workers, opts[:initial_workers] || 2},
-      {:active_workers, 0},
-      {:available_workers, 0},
-      {:peak_workers, 0},
-      {:waiting_clients, 0},
-      {:request_count, 0}
-    ])
+    # Initialize Atomics
+    import ElasticPool.Atomics
+    atomics = :atomics.new(count(), signed: true)
+    initial_workers = opts[:initial_workers] || 2
+    :atomics.put(atomics, score_idx(), 0)
+    :atomics.put(atomics, active_idx(), 0)
+    :atomics.put(atomics, peak_idx(), 0)
+    :atomics.put(atomics, request_idx(), 0)
+    :atomics.put(atomics, target_idx(), initial_workers)
+
+    :ets.insert(stats_table, {:atomics, atomics})
+
+    # Initialize specialized ETS tables for hot paths
+    available_table = Module.concat(name, AvailableWorkers)
+    waiting_table = Module.concat(name, WaitingClients)
+
+    for {t, type} <- [{available_table, :set}, {waiting_table, :ordered_set}] do
+      if :ets.whereis(t) == :undefined do
+        :ets.new(t, [:public, type, :named_table, read_concurrency: true])
+      else
+        :ets.delete_all_objects(t)
+      end
+    end
 
     # Group the configuration
     config = %{
       name: name,
-      # Pool process uses the name directly
       pool: name,
-      # Stored atom handle
       manager: manager_handle,
       stats_table: stats_table,
+      available_table: available_table,
+      waiting_table: waiting_table,
+      atomics: atomics,
       max_workers: Keyword.get(opts, :max_workers, :infinity),
-      initial_workers: opts[:initial_workers] || 2,
+      initial_workers: initial_workers,
       max_restarts: opts[:max_restarts] || 3,
       max_period: opts[:max_period] || 5,
 
@@ -340,7 +372,6 @@ defmodule ElasticPool do
     stats_interval = Keyword.get(opts, :stats_interval, 5000)
 
     children = [
-      {pool_mod, config},
       {manager_mod, config}
     ]
 
