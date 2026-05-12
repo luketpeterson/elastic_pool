@@ -88,13 +88,13 @@ defmodule ElasticPool.ScalingPolicy do
     the first client is forced to wait.
   - `:idle_regime` - Emitted the moment the last waiting client is satisfied
     and the pool becomes has at least one idle worker again.
+
   Lifecycle & Maintenance:
   - `:worker_ready` - Emitted when a new worker has finished initializing and
     entered the rotation.
   - `:worker_exit` - Emitted when a worker process terminates (due to crash or
     scale-down).
-  - `:periodic` - Emitted every 100ms by the WorkerManager timer to allow for
-    time-based cleanup or scale-down logic.
+  - `:periodic` - Emitted every 100ms by a timer.
   """
   @type event ::
           {:checkout_sample, [weight: pos_integer()]}

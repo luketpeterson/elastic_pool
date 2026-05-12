@@ -137,19 +137,31 @@ defmodule ElasticPool.WorkerManager do
         # Update active count
         :atomics.add(state.atomics, active_idx(), -1)
 
-        # Determine if we should clean up from available list
-        # If it was in the available table, it was idle, so we must decrement the score
-        if :ets.member(state.config.available_table, pid) do
-          :ets.delete(state.config.available_table, pid)
-          :atomics.add(state.atomics, score_idx(), -1)
+        # Atomic cleanup from available list:
+        # If the worker was in the available table, it was idle.
+        # We must take it atomically to avoid racing with a concurrent checkout.
+        case :ets.take(state.config.available_table, pid) do
+          [{^pid}] ->
+            # It was truly idle, so we decrement the score
+            :atomics.add(state.atomics, score_idx(), -1)
+          [] ->
+            # It was busy (checked out), so the score was already decremented by checkout
+            :ok
         end
+
+        state = evaluate_policy(:worker_exit, state)
 
         case reason do
           :normal ->
-            {:noreply, evaluate_policy(:worker_exit, state)}
+            # Even on normal exit, reconcile to ensure we hit target
+            case reconcile(state.target, state) do
+              {:ok, final_state} -> {:noreply, final_state}
+              {:error, :too_many_crashes} ->
+                Supervisor.stop(state.config.name, :shutdown)
+                {:stop, :shutdown, state}
+            end
 
           _other ->
-            state = evaluate_policy(:worker_exit, state)
             case check_intensity(state) do
               {:ok, new_state} ->
                 case reconcile(state.target, new_state, :recovery) do
