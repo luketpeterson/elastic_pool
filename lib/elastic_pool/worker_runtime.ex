@@ -90,7 +90,7 @@ defmodule ElasticPool.Worker.Runtime do
       @impl true
       def handle_info(msg, state) do
         if function_exported?(@handler, :handle_info, 2) do
-          case @handler.handle_info(msg, state.handler_state) do
+          case identity(@handler.handle_info(msg, state.handler_state)) do
             {:noreply, new_handler_state} ->
               {:noreply, %{state | handler_state: new_handler_state}}
 

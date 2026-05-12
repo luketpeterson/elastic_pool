@@ -27,7 +27,7 @@ end
 
 defmodule PoolBench do
   @default_iterations 1_000_000
-  @default_workers 1
+  @default_workers 8
   @poolboy_pool :poolboy_bench_pool
 
   def run(argv \\ System.argv()) do
