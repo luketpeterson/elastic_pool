@@ -20,6 +20,15 @@ defmodule ElasticPool.Atomics do
   # The current capacity goal of the scaling policy.
   defmacro target_idx, do: 6
 
+  # Monotonic ticket indices for the FIFO worker queue
+  defmacro worker_push_idx, do: 7
+  defmacro worker_pop_idx, do: 8
+
+  # Monotonic ticket indices for the FIFO client queue
+  defmacro client_push_idx, do: 9
+  defmacro client_pop_idx, do: 10
+
   # Total number of slots to allocate in :atomics.new/2
-  defmacro count, do: 6
-end
+  defmacro count, do: 10
+  end
+

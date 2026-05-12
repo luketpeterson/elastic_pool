@@ -346,7 +346,7 @@ defmodule ElasticPool do
     available_table = Module.concat(name, AvailableWorkers)
     waiting_table = Module.concat(name, WaitingClients)
 
-    for {t, type} <- [{available_table, :set}, {waiting_table, :ordered_set}] do
+    for {t, type} <- [{available_table, :set}, {waiting_table, :set}] do
       if :ets.whereis(t) == :undefined do
         :ets.new(t, [:public, type, :named_table, read_concurrency: true])
       else

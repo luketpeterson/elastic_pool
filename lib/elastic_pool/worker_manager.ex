@@ -137,18 +137,6 @@ defmodule ElasticPool.WorkerManager do
         # Update active count
         :atomics.add(state.atomics, active_idx(), -1)
 
-        # Atomic cleanup from available list:
-        # If the worker was in the available table, it was idle.
-        # We must take it atomically to avoid racing with a concurrent checkout.
-        case :ets.take(state.config.available_table, pid) do
-          [{^pid}] ->
-            # It was truly idle, so we decrement the score
-            :atomics.add(state.atomics, score_idx(), -1)
-          [] ->
-            # It was busy (checked out), so the score was already decremented by checkout
-            :ok
-        end
-
         state = evaluate_policy(:worker_exit, state)
 
         case reason do
@@ -201,16 +189,17 @@ defmodule ElasticPool.WorkerManager do
 
       defp kill_idle_workers(0, _state), do: :ok
       defp kill_idle_workers(n, state) do
-        # The "Third-Party Thief" logic:
         # Act like a client to safely take a worker for termination
         case :atomics.add_get(state.atomics, score_idx(), -1) do
           s when s >= 0 ->
-            case take_worker_spin(state.config.available_table, 100) do
+            target = :atomics.add_get(state.atomics, worker_pop_idx(), 1)
+            table = state.config.available_table
+            case spin_take(table, target, 10_000) do
               {:ok, pid} ->
                 Process.exit(pid, :normal)
                 kill_idle_workers(n - 1, state)
               :error ->
-                # Zombie write correction
+                # Contention or late pusher. Restore score and stop batch.
                 :atomics.add(state.atomics, score_idx(), 1)
                 :ok
             end
@@ -221,12 +210,13 @@ defmodule ElasticPool.WorkerManager do
         end
       end
 
-      defp take_worker_spin(table, 0), do: :error
-      defp take_worker_spin(table, limit) do
-        case :ets.first(table) do
-          :"$end_of_table" -> take_worker_spin(table, limit - 1)
-          pid ->
-            if :ets.delete(table, pid), do: {:ok, pid}, else: take_worker_spin(table, limit - 1)
+      defp spin_take(_table, _target, 0), do: :error
+      defp spin_take(table, target, limit) do
+        case :ets.take(table, target) do
+          [{^target, item}] -> {:ok, item}
+          [] ->
+            if rem(limit, 100) == 0, do: :erlang.yield()
+            spin_take(table, target, limit - 1)
         end
       end
 
