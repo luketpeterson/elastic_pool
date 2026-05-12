@@ -157,7 +157,6 @@ defmodule ElasticPool.WorkerManager do
             case reconcile(state.target, state) do
               {:ok, final_state} -> {:noreply, final_state}
               {:error, :too_many_crashes} ->
-                Supervisor.stop(state.config.name, :shutdown)
                 {:stop, :shutdown, state}
             end
 
@@ -168,13 +167,11 @@ defmodule ElasticPool.WorkerManager do
                   {:ok, final_state} -> {:noreply, final_state}
                   {:error, :too_many_crashes} ->
                     # Stop the entire supervisor tree
-                    Supervisor.stop(state.config.name, :shutdown)
                     {:stop, :shutdown, state}
                 end
 
               {:error, :too_many_crashes} ->
                 # Stop the entire supervisor tree
-                Supervisor.stop(state.config.name, :shutdown)
                 {:stop, :shutdown, state}
             end
         end
