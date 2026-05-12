@@ -292,3 +292,66 @@ defmodule ElasticPoolTest do
     end
   end
 end
+
+defmodule ElasticPoolTest.AsyncWorker do
+  use ElasticPool.Worker
+
+  @impl true
+  def init(args) do
+    Enum.into(args, %{})
+  end
+
+  @impl true
+  def handle_work({:set_test_pid, pid}, _from, state) do
+    {:reply, :ok, Map.put(state, :test_pid, pid)}
+  end
+
+  @impl true
+  def handle_info({:echo, msg}, state) do
+    if state[:test_pid], do: send(state[:test_pid], {:async_echo, msg})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:stop_yourself, state) do
+    {:stop, :normal, state}
+  end
+end
+
+defmodule AsyncPool do
+  use ElasticPool,
+    worker_handler: ElasticPoolTest.AsyncWorker
+end
+
+defmodule ElasticPoolAsyncTest do
+  use ExUnit.Case
+
+  test "handle_info forwards messages to worker" do
+    {:ok, pid} = AsyncPool.start_link(initial_workers: 1, stats_interval: :never)
+
+    {:ok, _ref, worker_pid} = ElasticPool.Pool.checkout(AsyncPool)
+    :ok = GenServer.call(worker_pid, {:set_test_pid, self()})
+    ElasticPool.Pool.checkin(AsyncPool, worker_pid)
+
+    # Now send an async message to the worker
+    send(worker_pid, {:echo, "hello async"})
+
+    assert_receive {:async_echo, "hello async"}, 500
+
+    Supervisor.stop(pid)
+  end
+
+  test "handle_info can stop the worker" do
+    {:ok, pool_pid} = AsyncPool.start_link(initial_workers: 1, stats_interval: :never)
+
+    {:ok, _ref, worker_pid} = ElasticPool.Pool.checkout(AsyncPool)
+    Process.monitor(worker_pid)
+
+    # Send stop message
+    send(worker_pid, :stop_yourself)
+
+    assert_receive {:DOWN, _, :process, ^worker_pid, :normal}, 500
+
+    Supervisor.stop(pool_pid)
+  end
+end
