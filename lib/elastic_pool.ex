@@ -235,8 +235,10 @@ defmodule ElasticPool do
   defmacro available_workers(pool) do
     quote do
       atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
-      score = :atomics.get(atomics, unquote(ElasticPool.Atomics.score_idx()))
-      if score > 0, do: score, else: 0
+      Enum.reduce(1..unquote(ElasticPool.Atomics.num_shards()), 0, fn i, acc ->
+        score = :atomics.get(atomics, i)
+        if score > 0, do: acc + score, else: acc
+      end)
     end
   end
 
@@ -258,8 +260,10 @@ defmodule ElasticPool do
   defmacro waiting_clients(pool) do
     quote do
       atomics = :ets.lookup_element(unquote(pool), :atomics, 2)
-      score = :atomics.get(atomics, unquote(ElasticPool.Atomics.score_idx()))
-      if score < 0, do: abs(score), else: 0
+      Enum.reduce(1..unquote(ElasticPool.Atomics.num_shards()), 0, fn i, acc ->
+        score = :atomics.get(atomics, i)
+        if score < 0, do: acc + abs(score), else: acc
+      end)
     end
   end
 
@@ -331,27 +335,55 @@ defmodule ElasticPool do
     import ElasticPool.Atomics
     atomics = :atomics.new(count(), signed: true)
 
-    :atomics.put(atomics, score_idx(), 0)
     :atomics.put(atomics, active_idx(), 0)
     :atomics.put(atomics, peak_idx(), 0)
     :atomics.put(atomics, request_idx(), 0)
     :atomics.put(atomics, completion_idx(), 0)
     :atomics.put(atomics, target_idx(), initial_workers)
 
+    # Initialize Shard Counters
+    for i <- 1..ElasticPool.Atomics.num_shards() do
+      :atomics.put(atomics, ElasticPool.Atomics.score_idx(i), 0)
+      :atomics.put(atomics, ElasticPool.Atomics.push_idx(i), 0)
+      :atomics.put(atomics, ElasticPool.Atomics.pop_idx(i), 0)
+    end
+
+    # Initialize 16 independent Available Worker tables
+    available_tables = 
+      for i <- 0..(ElasticPool.Atomics.num_shards() - 1) do
+        t = Module.concat([name, AvailableWorkers, "Shard#{i}"])
+        if :ets.whereis(t) == :undefined do
+          :ets.new(t, [:public, :duplicate_bag, :named_table, read_concurrency: true])
+        else
+          :ets.delete_all_objects(t)
+        end
+        t
+      end
+    
+    available_tables_tuple = List.to_tuple(available_tables)
+
+    waiting_table = Module.concat(name, WaitingClients)
+    reverse_table = Module.concat(name, WorkerTickets)
+
     :ets.insert(stats_table, {:atomics, atomics})
+    :ets.insert(stats_table, {:tables, %{
+      available: available_tables_tuple,
+      waiting: waiting_table,
+      reverse: reverse_table
+    }})
     # Mirror sampling_rate to ETS to allow lock-free access in the caller's process (Pool)
     :ets.insert(stats_table, {:sampling_rate, sampling_rate})
 
-    # Initialize specialized ETS tables for hot paths
-    available_table = Module.concat(name, AvailableWorkers)
-    waiting_table = Module.concat(name, WaitingClients)
+    if :ets.whereis(reverse_table) == :undefined do
+      :ets.new(reverse_table, [:public, :set, :named_table, read_concurrency: true])
+    else
+      :ets.delete_all_objects(reverse_table)
+    end
 
-    for {t, type} <- [{available_table, :set}, {waiting_table, :set}] do
-      if :ets.whereis(t) == :undefined do
-        :ets.new(t, [:public, type, :named_table, read_concurrency: true])
-      else
-        :ets.delete_all_objects(t)
-      end
+    if :ets.whereis(waiting_table) == :undefined do
+      :ets.new(waiting_table, [:public, :set, :named_table, read_concurrency: true])
+    else
+      :ets.delete_all_objects(waiting_table)
     end
 
     # Group the configuration
@@ -360,7 +392,7 @@ defmodule ElasticPool do
       pool: name,
       manager: manager_handle,
       stats_table: stats_table,
-      available_table: available_table,
+      available_tables: available_tables_tuple,
       waiting_table: waiting_table,
       atomics: atomics,
       sampling_rate: sampling_rate,

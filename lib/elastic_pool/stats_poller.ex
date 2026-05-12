@@ -35,11 +35,19 @@ defmodule ElasticPool.StatsPoller do
     atomics = state.config.atomics
     import ElasticPool.Atomics
 
-    # Read from atomics (score, active, peak, requests, target)
-    score = :atomics.get(atomics, score_idx())
+    # Read from atomics
     active = :atomics.get(atomics, active_idx())
-    available = if score > 0, do: score, else: 0
-    waiting = if score < 0, do: abs(score), else: 0
+
+    # Aggregate across shards
+    {available, waiting} =
+      Enum.reduce(1..num_shards(), {0, 0}, fn i, {avail_acc, wait_acc} ->
+        score = :atomics.get(atomics, i)
+        if score > 0 do
+          {avail_acc + score, wait_acc}
+        else
+          {avail_acc, wait_acc + abs(score)}
+        end
+      end)
 
     measurements = %{
       target_workers: :atomics.get(atomics, target_idx()),

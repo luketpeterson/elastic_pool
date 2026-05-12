@@ -1,34 +1,21 @@
 defmodule ElasticPool.Atomics do
   @moduledoc false
 
-  # The ground truth of the pool state.
-  # Positive: Idle workers available. Negative: Clients waiting.
-  defmacro score_idx, do: 1
+  # Shard Scores: 1..16
+  def score_idx(shard), do: shard
+  
+  # Shard Push Indices: 17..32
+  def push_idx(shard), do: 16 + shard
+  
+  # Shard Pop Indices: 33..48
+  def pop_idx(shard), do: 32 + shard
 
-  # Current physical count of workers linked to the manager.
-  defmacro active_idx, do: 2
+  defmacro active_idx, do: 49
+  defmacro peak_idx, do: 50
+  defmacro request_idx, do: 51
+  defmacro completion_idx, do: 52
+  defmacro target_idx, do: 53
 
-  # Historical maximum of concurrent workers.
-  defmacro peak_idx, do: 3
-
-  # Total number of checkout requests since start.
-  defmacro request_idx, do: 4
-
-  # Total number of checkins (completed jobs) since start.
-  defmacro completion_idx, do: 5
-
-  # The current capacity goal of the scaling policy.
-  defmacro target_idx, do: 6
-
-  # Monotonic ticket indices for the FIFO worker queue
-  defmacro worker_push_idx, do: 7
-  defmacro worker_pop_idx, do: 8
-
-  # Monotonic ticket indices for the FIFO client queue
-  defmacro client_push_idx, do: 9
-  defmacro client_pop_idx, do: 10
-
-  # Total number of slots to allocate in :atomics.new/2
-  defmacro count, do: 10
-  end
-
+  defmacro count, do: 54
+  defmacro num_shards, do: 16
+end

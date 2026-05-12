@@ -137,6 +137,16 @@ defmodule ElasticPool.WorkerManager do
         # Update active count
         :atomics.add(state.atomics, active_idx(), -1)
 
+        # Background Scan: Remove dead worker from whichever shard it was in
+        tables = :ets.lookup_element(state.pool_name, :tables, 2)
+        for i <- 0..(ElasticPool.Atomics.num_shards() - 1) do
+          table = elem(tables.available, i)
+          if :ets.delete_object(table, {pid}) do
+            # Found it! Decrement the shard score and stop scanning
+            :atomics.add(state.atomics, score_idx(i + 1), -1)
+          end
+        end
+
         state = evaluate_policy(:worker_exit, state)
 
         case reason do
@@ -189,42 +199,40 @@ defmodule ElasticPool.WorkerManager do
 
       defp kill_idle_workers(0, _state), do: :ok
       defp kill_idle_workers(n, state) do
-        # Act like a client to safely take a worker for termination
-        case :atomics.add_get(state.atomics, score_idx(), -1) do
+        # Iterate through shards to find workers to kill
+        kill_from_shard(n, state, 0)
+      end
+
+      defp kill_from_shard(0, _state, _shard), do: :ok
+      defp kill_from_shard(n, state, shard) when shard < ElasticPool.Atomics.num_shards() do
+        case :atomics.add_get(state.atomics, score_idx(shard + 1), -1) do
           s when s >= 0 ->
-            target = :atomics.add_get(state.atomics, worker_pop_idx(), 1)
             table = state.config.available_table
-            case spin_take(table, target, 10_000) do
-              {:ok, pid} ->
+            case :ets.take(table, shard) do
+              [{^shard, pid}] ->
                 Process.exit(pid, :normal)
-                kill_idle_workers(n - 1, state)
-              :error ->
-                # Contention or late pusher. Restore score and stop batch.
-                :atomics.add(state.atomics, score_idx(), 1)
-                :ok
+                kill_from_shard(n - 1, state, shard)
+              [] ->
+                :atomics.add(state.atomics, score_idx(shard + 1), 1)
+                kill_from_shard(n, state, shard + 1)
             end
           _s ->
-            # No idle workers to kill, undo reservation
-            :atomics.add(state.atomics, score_idx(), 1)
-            :ok
+            :atomics.add(state.atomics, score_idx(shard + 1), 1)
+            kill_from_shard(n, state, shard + 1)
         end
       end
-
-      defp spin_take(_table, _target, 0), do: :error
-      defp spin_take(table, target, limit) do
-        case :ets.take(table, target) do
-          [{^target, item}] -> {:ok, item}
-          [] ->
-            if rem(limit, 100) == 0, do: :erlang.yield()
-            spin_take(table, target, limit - 1)
-        end
-      end
+      defp kill_from_shard(_n, _state, _shard), do: :ok
 
       defp evaluate_policy(event, state) do
+        # Aggregate scores across all shards
+        total_score = 
+          Enum.reduce(1..ElasticPool.Atomics.num_shards(), 0, fn i, acc ->
+            acc + :atomics.get(state.atomics, i)
+          end)
+
         # If we are polling and have waiting clients, treat it as a checkout failure
-        score = :atomics.get(state.atomics, score_idx())
         event =
-          if event == :periodic and score < 0 do
+          if event == :periodic and total_score < 0 do
             :checkout_failed
           else
             event
