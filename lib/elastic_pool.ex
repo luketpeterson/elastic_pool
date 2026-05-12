@@ -280,22 +280,11 @@ defmodule ElasticPool do
       """
     end
 
-    # Check for presence and behavior at compile time if possible
-    cond do
-      !Code.ensure_loaded?(worker) ->
-        raise ArgumentError, "Worker module #{inspect(worker)} could not be loaded in #{module}"
-
-      !function_exported?(worker, :handle_work, 3) ->
-        raise ArgumentError,
-              "Worker module #{inspect(worker)} does not implement ElasticPool.Worker behavior (missing handle_work/3) in #{module}"
-
-      !Code.ensure_loaded?(policy) ->
-        raise ArgumentError,
-              "Scaling policy module #{inspect(policy)} could not be loaded in #{module}"
-
-      true ->
-        {worker, policy}
-    end
+    # RELAXED CHECK: Since we are monomorphizing, we can't reliably check
+    # for behavioral exports of the handler module at compile-time if it's
+    # being defined in the same file or a sibling file that hasn't finished yet.
+    # The Runtime module will still perform a fail-fast check during worker init.
+    {worker, policy}
   end
 
   @doc false
