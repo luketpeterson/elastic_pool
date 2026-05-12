@@ -53,7 +53,7 @@ defmodule ElasticPool.Policies.ErlangC do
       smoothing: opts[:smoothing] || 0.2,
       max_workers: pool.max_workers,
       max_search_workers: opts[:max_search_workers] || 64,
-      arrival_rate: nil,
+      arrival_rate: opts[:bootstrap_arrival_rate] || 0.0,
       completion_rate: nil,
       service_time_ms: bootstrap_service_time_ms * 1.0,
       last_arrival_at_ms: nil,
@@ -70,41 +70,40 @@ defmodule ElasticPool.Policies.ErlangC do
   def handle_event(event, pool, state) do
     now_ms = System.monotonic_time(:millisecond)
     state = update_estimates(event, pool, now_ms, state)
-    target = desired_target(event, pool, state)
+
+    # Recalculate target on every event (Sample, Regime Change, Lifecycle, Periodic)
+    # This ensures the policy "takes stock" of the latest data and live pool stats.
+    target = desired_target(pool, state)
     {target, state}
   end
 
   defp update_estimates(event, pool, now_ms, state) do
-    state =
-      case event do
-        :checkout_success -> observe_arrival(now_ms, state)
-        :checkout_failed -> observe_arrival(now_ms, state)
-        _ -> state
-      end
-
     case event do
-      :checkin -> observe_completion(now_ms, pool, state)
+      {:checkout_sample, [weight: w]} -> observe_arrival(now_ms, w, state)
+      {:checkin_sample, [weight: w]} -> observe_completion(now_ms, w, pool, state)
       _ -> state
     end
   end
 
-  defp observe_arrival(now_ms, state) do
+  defp observe_arrival(now_ms, weight, state) do
     %{
       state
       | last_arrival_at_ms: now_ms,
         arrival_rate:
-          ewma_rate(now_ms, state.last_arrival_at_ms, state.arrival_rate, state.smoothing)
+          ewma_rate(now_ms, state.last_arrival_at_ms, weight, state.arrival_rate, state.smoothing)
     }
   end
 
-  defp observe_completion(now_ms, pool, state) do
+  defp observe_completion(now_ms, weight, pool, state) do
     completion_rate =
-      ewma_rate(now_ms, state.last_completion_at_ms, state.completion_rate, state.smoothing)
+      ewma_rate(now_ms, state.last_completion_at_ms, weight, state.completion_rate, state.smoothing)
 
     busy_workers = max(1, busy_workers(pool))
 
     service_time_ms =
       if completion_rate do
+        # Completion Rate is jobs/sec. Service Time is sec/job.
+        # We assume completions are distributed across busy workers.
         observed_service_time_ms = busy_workers * 1_000.0 / completion_rate
         ewma(state.service_time_ms, observed_service_time_ms, state.smoothing)
       else
@@ -119,7 +118,7 @@ defmodule ElasticPool.Policies.ErlangC do
     }
   end
 
-  defp desired_target(event, pool, state) do
+  defp desired_target(pool, state) do
     current_target = ElasticPool.target_workers(pool)
     arrival_rate = state.arrival_rate || 0.0
     service_time_ms = max(state.service_time_ms, 1.0)
@@ -138,12 +137,6 @@ defmodule ElasticPool.Policies.ErlangC do
           upper
         )
 
-      target =
-        case event do
-          :checkout_failed -> max(target, current_target + 1)
-          _ -> target
-        end
-
       maybe_target(target, current_target)
     end
   end
@@ -151,11 +144,11 @@ defmodule ElasticPool.Policies.ErlangC do
   defp maybe_target(target, current_target) when target == current_target, do: :no_change
   defp maybe_target(target, _current_target), do: target
 
-  defp ewma_rate(_now_ms, nil, previous, _smoothing), do: previous
+  defp ewma_rate(_now_ms, nil, _weight, previous, _smoothing), do: previous
 
-  defp ewma_rate(now_ms, last_ms, previous, smoothing) do
+  defp ewma_rate(now_ms, last_ms, weight, previous, smoothing) do
     delta_ms = max(now_ms - last_ms, 1)
-    instant_rate = 1_000.0 / delta_ms
+    instant_rate = (weight * 1_000.0) / delta_ms
 
     if previous do
       ewma(previous, instant_rate, smoothing)

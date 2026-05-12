@@ -105,7 +105,6 @@ defmodule ElasticPool.ScalingPolicy do
           | :worker_exit
           | :periodic
 
-
   @type target_decision :: pos_integer() | :no_change
 
   @doc "Initialize the policy state"

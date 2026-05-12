@@ -297,6 +297,7 @@ defmodule ElasticPool.IntegrationTest do
         initial_workers: 1,
         max_workers: 6,
         stats_interval: :never,
+        policy_sampling_rate: 5,
         worker_args: [test_pid: test_pid],
         scaling_policy_opts: [
           target_wait_ms: 20,
