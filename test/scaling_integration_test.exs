@@ -402,8 +402,9 @@ defmodule ElasticPool.IntegrationTest do
   defp wait_for_idle(name, retries \\ 100) do
     active = ElasticPool.active_workers(name)
     available = ElasticPool.available_workers(name)
+    target = ElasticPool.target_workers(name)
 
-    if (active > 0 and active == available) or retries == 0 do
+    if (active == target and active == available) or retries == 0 do
       :ok
     else
       Process.sleep(10)
