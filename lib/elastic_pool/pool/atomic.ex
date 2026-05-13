@@ -18,7 +18,7 @@ defmodule ElasticPool.Pool.Atomic do
 
     case :atomics.add_get(atomics, score_idx(), -1) do
       s when s >= 0 ->
-        # Transition to Saturation: If we just hit exactly 0 idle workers, 
+        # Transition to Saturation: If we just hit exactly 0 idle workers,
         # but the request is being satisfied, we're at the edge.
         # (Technically saturation starts when we hit -1, handled in wait_for_worker)
         case take_worker_spin(pool_name, @max_spin) do
@@ -85,6 +85,51 @@ defmodule ElasticPool.Pool.Atomic do
   def add_worker(pool_name, worker_pid) do
     # New workers use the same checkin logic to enter rotation
     checkin(pool_name, worker_pid)
+  end
+
+  @spec dismiss_workers(atom(), non_neg_integer()) :: :ok
+  def dismiss_workers(_pool_name, 0), do: :ok
+  def dismiss_workers(pool_name, n) do
+    config = get_config(pool_name)
+    atomics = config.atomics
+
+    # The "Third-Party Thief" logic:
+    # Act like a client to safely take a worker for termination
+    case :atomics.add_get(atomics, score_idx(), -1) do
+      s when s >= 0 ->
+        case take_worker_spin(pool_name, @max_spin) do
+          {:ok, pid} ->
+            Process.exit(pid, :normal)
+            dismiss_workers(pool_name, n - 1)
+          :error ->
+            # Zombie write correction
+            :atomics.add(atomics, score_idx(), 1)
+            :ok
+        end
+      _s ->
+        # No idle workers to kill, undo reservation
+        :atomics.add(atomics, score_idx(), 1)
+        :ok
+    end
+  end
+
+  @spec worker_exit(atom(), pid()) :: :ok
+  def worker_exit(pool_name, pid) do
+    config = get_config(pool_name)
+    atomics = config.atomics
+    table = Module.concat(pool_name, AvailableWorkers)
+
+    # Atomic cleanup from available list:
+    # If the worker was in the available table, it was idle.
+    # We must take it atomically to avoid racing with a concurrent checkout.
+    case :ets.take(table, pid) do
+      [{^pid}] ->
+        # It was truly idle, so we decrement the score
+        :atomics.add(atomics, score_idx(), -1)
+      [] ->
+        # It was busy (checked out), so the score was already decremented by checkout
+        :ok
+    end
   end
 
   @doc false

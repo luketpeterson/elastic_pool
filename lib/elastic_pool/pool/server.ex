@@ -29,6 +29,18 @@ defmodule ElasticPool.Pool.Server do
     checkin(pool_name, worker_pid)
   end
 
+  @spec dismiss_workers(atom(), non_neg_integer()) :: :ok
+  def dismiss_workers(pool_name, n) do
+    server = Module.concat(pool_name, PoolServer)
+    GenServer.cast(server, {:dismiss_workers, n})
+  end
+
+  @spec worker_exit(atom(), pid()) :: :ok
+  def worker_exit(pool_name, pid) do
+    server = Module.concat(pool_name, PoolServer)
+    GenServer.cast(server, {:worker_exit, pid})
+  end
+
   @doc false
   def pool_children(config), do: [{__MODULE__, config}]
 
@@ -41,7 +53,7 @@ defmodule ElasticPool.Pool.Server do
       pool_name: config.name,
       atomics: config.atomics,
       manager: config.manager,
-      available_table: config.available_table,
+      idle_workers: [], # LIFO Stack
       waiting_clients: :queue.new(),
       monitors: %{} # ref -> from
     }}
@@ -55,12 +67,17 @@ defmodule ElasticPool.Pool.Server do
       notify_manager(state.manager, {:checkout_sample, weight: state.config.sampling_rate})
     end
 
-    case take_worker(state.available_table) do
-      {:ok, pid} ->
-        :atomics.add(state.atomics, score_idx(), -1)
-        {:reply, {:ok, nil, pid}, state}
+    case state.idle_workers do
+      [pid | rest] ->
+        if Process.alive?(pid) do
+          :atomics.add(state.atomics, score_idx(), -1)
+          {:reply, {:ok, nil, pid}, %{state | idle_workers: rest}}
+        else
+          # Discard dead worker and retry checkout (effectively)
+          handle_call(:checkout, from, %{state | idle_workers: rest})
+        end
 
-      :error ->
+      [] ->
         if :queue.is_empty(state.waiting_clients) do
           notify_manager(state.manager, :saturation_regime)
         end
@@ -96,8 +113,30 @@ defmodule ElasticPool.Pool.Server do
         if :atomics.add_get(state.atomics, score_idx(), 1) == 1 do
           notify_manager(state.manager, :idle_regime)
         end
-        put_worker_idle(state.available_table, worker_pid)
-        {:noreply, %{state | waiting_clients: new_waiting, monitors: new_monitors}}
+        {:noreply, %{state | idle_workers: [worker_pid | state.idle_workers], waiting_clients: new_waiting, monitors: new_monitors}}
+    end
+  end
+
+  @impl true
+  def handle_cast({:dismiss_workers, n}, state) do
+    {to_kill, rest} = Enum.split(state.idle_workers, n)
+
+    Enum.each(to_kill, fn pid ->
+      :atomics.add(state.atomics, score_idx(), -1)
+      Process.exit(pid, :normal)
+    end)
+
+    {:noreply, %{state | idle_workers: rest}}
+  end
+
+  @impl true
+  def handle_cast({:worker_exit, pid}, state) do
+    if pid in state.idle_workers do
+      :atomics.add(state.atomics, score_idx(), -1)
+      {:noreply, %{state | idle_workers: List.delete(state.idle_workers, pid)}}
+    else
+      # Worker was busy, score already accounted for
+      {:noreply, state}
     end
   end
 
@@ -128,26 +167,6 @@ defmodule ElasticPool.Pool.Server do
       {:empty, _} ->
         {:empty, waiting, monitors}
     end
-  end
-
-  defp take_worker(table) do
-    case :ets.first(table) do
-      :"$end_of_table" -> :error
-      pid ->
-        case :ets.take(table, pid) do
-          [{^pid}] ->
-            if Process.alive?(pid) do
-              {:ok, pid}
-            else
-              take_worker(table)
-            end
-          [] -> take_worker(table)
-        end
-    end
-  end
-
-  defp put_worker_idle(table, worker_pid) do
-    :ets.insert(table, {worker_pid})
   end
 
   defp notify_manager(manager, event) do

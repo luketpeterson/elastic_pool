@@ -137,17 +137,8 @@ defmodule ElasticPool.WorkerManager do
         # Update active count
         :atomics.add(state.atomics, active_idx(), -1)
 
-        # Atomic cleanup from available list:
-        # If the worker was in the available table, it was idle.
-        # We must take it atomically to avoid racing with a concurrent checkout.
-        case :ets.take(state.config.available_table, pid) do
-          [{^pid}] ->
-            # It was truly idle, so we decrement the score
-            :atomics.add(state.atomics, score_idx(), -1)
-          [] ->
-            # It was busy (checked out), so the score was already decremented by checkout
-            :ok
-        end
+        # Notify pool of worker exit to handle idle list/stats correction
+        ElasticPool.Pool.worker_exit(state.config.pool, pid)
 
         state = evaluate_policy(:worker_exit, state)
 
@@ -187,46 +178,15 @@ defmodule ElasticPool.WorkerManager do
         active_count = :atomics.get(state.atomics, active_idx())
 
         if new_target < active_count do
-          # Scale down: acquire workers from the idle pool
+          # Scale down: ask pool to dismiss workers
           to_kill = active_count - new_target
-          kill_idle_workers(to_kill, state)
+          ElasticPool.Pool.dismiss_workers(state.config.pool, to_kill)
         end
 
         case reconcile(new_target, state) do
           {:ok, new_state} -> new_state
           {:error, :too_many_crashes} ->
             exit(:shutdown)
-        end
-      end
-
-      defp kill_idle_workers(0, _state), do: :ok
-      defp kill_idle_workers(n, state) do
-        # The "Third-Party Thief" logic:
-        # Act like a client to safely take a worker for termination
-        case :atomics.add_get(state.atomics, score_idx(), -1) do
-          s when s >= 0 ->
-            case take_worker_spin(state.config.available_table, 100) do
-              {:ok, pid} ->
-                Process.exit(pid, :normal)
-                kill_idle_workers(n - 1, state)
-              :error ->
-                # Zombie write correction
-                :atomics.add(state.atomics, score_idx(), 1)
-                :ok
-            end
-          _s ->
-            # No idle workers to kill, undo reservation
-            :atomics.add(state.atomics, score_idx(), 1)
-            :ok
-        end
-      end
-
-      defp take_worker_spin(table, 0), do: :error
-      defp take_worker_spin(table, limit) do
-        case :ets.first(table) do
-          :"$end_of_table" -> take_worker_spin(table, limit - 1)
-          pid ->
-            if :ets.delete(table, pid), do: {:ok, pid}, else: take_worker_spin(table, limit - 1)
         end
       end
 

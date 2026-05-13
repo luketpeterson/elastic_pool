@@ -23,6 +23,20 @@ defmodule ElasticPool.Pool do
     @impl_mod.add_worker(pool_name, worker_pid)
   end
 
+  @doc """
+  Called by the Manager to scale down the pool by N idle workers.
+  """
+  def dismiss_workers(pool_name, n) do
+    @impl_mod.dismiss_workers(pool_name, n)
+  end
+
+  @doc """
+  Called by the Manager when a worker process has exited.
+  """
+  def worker_exit(pool_name, pid) do
+    @impl_mod.worker_exit(pool_name, pid)
+  end
+
   @doc false
   def pool_children(config) do
     @impl_mod.pool_children(config)
