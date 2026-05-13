@@ -378,9 +378,9 @@ defmodule ElasticPool do
 
     stats_interval = Keyword.get(opts, :stats_interval, 5000)
 
-    children = [
-      {manager_mod, config}
-    ]
+    children = ElasticPool.Pool.pool_children(config)
+
+    children = children ++ [{manager_mod, config}]
 
     children =
       if stats_interval == :never do
