@@ -6,10 +6,11 @@ defmodule ElasticPool.Pool do
   @impl_mod Application.compile_env(:elastic_pool, :pool_implementation, ElasticPool.Pool.Atomic)
 
   @doc """
-  Returns the current pool implementation module.
+  Initializes the pool's internal state (e.g., ETS tables).
   """
-  @spec implementation() :: module()
-  def implementation, do: @impl_mod
+  def setup_pool(config) do
+    @impl_mod.setup_pool(config)
+  end
 
   def checkout(pool_name, timeout \\ :infinity) do
     @impl_mod.checkout(pool_name, timeout)

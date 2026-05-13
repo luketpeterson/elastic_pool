@@ -342,26 +342,12 @@ defmodule ElasticPool do
     # Mirror sampling_rate to ETS to allow lock-free access in the caller's process (Pool)
     :ets.insert(stats_table, {:sampling_rate, sampling_rate})
 
-    # Initialize specialized ETS tables for hot paths
-    available_table = Module.concat(name, AvailableWorkers)
-    waiting_table = Module.concat(name, WaitingClients)
-
-    for {t, type} <- [{available_table, :set}, {waiting_table, :ordered_set}] do
-      if :ets.whereis(t) == :undefined do
-        :ets.new(t, [:public, type, :named_table, read_concurrency: true])
-      else
-        :ets.delete_all_objects(t)
-      end
-    end
-
     # Group the configuration
     config = %{
       name: name,
       pool: name,
       manager: manager_handle,
       stats_table: stats_table,
-      available_table: available_table,
-      waiting_table: waiting_table,
       atomics: atomics,
       sampling_rate: sampling_rate,
       max_workers: max_workers,
@@ -375,6 +361,9 @@ defmodule ElasticPool do
       # Worker Configuration
       worker_args: worker_args
     }
+
+    # Initialize implementation-specific state (e.g., ETS tables for Atomic)
+    ElasticPool.Pool.setup_pool(config)
 
     stats_interval = Keyword.get(opts, :stats_interval, 5000)
 

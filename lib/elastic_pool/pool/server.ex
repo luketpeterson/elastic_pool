@@ -29,6 +29,9 @@ defmodule ElasticPool.Pool.Server do
     checkin(pool_name, worker_pid)
   end
 
+  @doc false
+  def setup_pool(_config), do: :ok
+
   @spec dismiss_workers(atom(), non_neg_integer()) :: :ok
   def dismiss_workers(pool_name, n) do
     server = Module.concat(pool_name, PoolServer)
