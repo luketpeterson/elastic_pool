@@ -81,3 +81,5 @@ without bound.
 To avoid dumb errors
 
 ### Scaling Policy heartbeat should be a config value
+
+### Get rid of the pervasive concat pattern.  Again
